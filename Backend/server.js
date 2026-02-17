@@ -129,8 +129,15 @@ app.get('/fijos/:sucursalId', (req, res) => {
         return res.json(result);
     });
 });
-// 9. Obtener Programación Semanal
+
+// 9. Obtener Programación Semanal (POR FECHA)
 app.get('/programacion-semanal', (req, res) => {
+    const { fecha } = req.query; // Recibimos ?fecha=YYYY-MM-DD
+
+    if (!fecha) {
+        return res.status(400).json({ error: "Se requiere la fecha de inicio de semana" });
+    }
+
     const sql = `
         SELECT p.*, 
                e.nombre_completo as nombre_empleado,
@@ -138,21 +145,20 @@ app.get('/programacion-semanal', (req, res) => {
         FROM programacion_semanal p
         JOIN empleados e ON p.empleado_id = e.id
         JOIN clientes_sucursales c ON p.sucursal_id = c.id
+        WHERE p.fecha_inicio_semana = ?
     `;
-    db.query(sql, (err, result) => {
+    db.query(sql, [fecha], (err, result) => {
         if (err) return res.json(err);
         return res.json(result);
     });
 });
 
-// 10. Guardar o Actualizar un Turno (Celda específica)
+// 10. Guardar o Actualizar un Turno (Recibiendo la FECHA)
 app.post('/programacion-semanal/actualizar', (req, res) => {
-    const { sucursalId, empleadoId, tipo, dia, valor } = req.body;
+    const { sucursalId, empleadoId, tipo, dia, valor, fechaSemana } = req.body;
     
-    // Usamos fecha dummy por ahora (o la fecha actual de la semana)
-    const fechaSemana = '2026-02-14'; 
+    if (!fechaSemana) return res.status(400).json({ error: "Falta fecha semana" });
 
-    // Usamos ON DUPLICATE KEY UPDATE para crear o editar en una sola consulta
     const sql = `
         INSERT INTO programacion_semanal (sucursal_id, empleado_id, tipo_empleado, fecha_inicio_semana, ${dia}) 
         VALUES (?, ?, ?, ?, ?)
@@ -168,10 +174,11 @@ app.post('/programacion-semanal/actualizar', (req, res) => {
     });
 });
 
-// 11. Agregar Empleado a la Programación (Fila nueva vacía)
+// 11. Agregar Empleado a la Programación (Recibiendo la FECHA)
 app.post('/programacion-semanal/agregar', (req, res) => {
-    const { sucursalId, empleadoId, tipo } = req.body;
-    const fechaSemana = '2026-02-14';
+    const { sucursalId, empleadoId, tipo, fechaSemana } = req.body;
+
+    if (!fechaSemana) return res.status(400).json({ error: "Falta fecha semana" });
 
     const sql = `
         INSERT INTO programacion_semanal (sucursal_id, empleado_id, tipo_empleado, fecha_inicio_semana) 
@@ -192,17 +199,22 @@ app.delete('/programacion-semanal/:id', (req, res) => {
         return res.json({ message: "Eliminado" });
     });
 });
-// 13. ROTAR TURNOS (Mueve el TEXTO de los horarios, deja a los empleados quietos)
+
+// 13. ROTAR TURNOS (CON FILTRO DE FECHA)
 app.post('/rotar-turnos', (req, res) => {
+    const { fechaSemana } = req.body;
+
+    if (!fechaSemana) return res.status(400).json({ error: "Falta fecha semana para rotar" });
+
     try {
-        // 1. Obtener todas las filas de FIJOS ordenadas
+        // 1. Obtener todas las filas de FIJOS de ESA SEMANA
         const sqlGet = `
             SELECT * FROM programacion_semanal 
-            WHERE tipo_empleado = 'Fijo'
+            WHERE tipo_empleado = 'Fijo' AND fecha_inicio_semana = ?
             ORDER BY sucursal_id, id ASC
         `;
         
-        db.query(sqlGet, async (err, resultados) => {
+        db.query(sqlGet, [fechaSemana], async (err, resultados) => {
             if (err) {
                 console.error(err);
                 return res.status(500).json({ error: "Error al leer turnos" });
@@ -222,7 +234,6 @@ app.post('/rotar-turnos', (req, res) => {
                 const filas = porSucursal[sucursalId];
                 
                 if (filas.length > 1) {
-                    // Guardamos los turnos de la ÚLTIMA fila (para ponerlos en la primera)
                     const ultimoIndex = filas.length - 1;
                     const turnosDelUltimo = {
                         sabado: filas[ultimoIndex].sabado,
@@ -234,14 +245,12 @@ app.post('/rotar-turnos', (req, res) => {
                         viernes: filas[ultimoIndex].viernes
                     };
 
-                    // Rotamos de abajo hacia arriba (Fila 2 toma datos de Fila 1)
                     for (let i = ultimoIndex; i > 0; i--) {
                         const filaActual = filas[i];
-                        const filaAnterior = filas[i - 1]; // Tomamos los datos del de arriba
+                        const filaAnterior = filas[i - 1]; 
 
                         actualizaciones.push({
-                            id: filaActual.id, // ID de la fila (Empleado X)
-                            // Le ponemos los turnos del empleado anterior
+                            id: filaActual.id, 
                             sabado: filaAnterior.sabado, domingo: filaAnterior.domingo,
                             lunes: filaAnterior.lunes, martes: filaAnterior.martes,
                             miercoles: filaAnterior.miercoles, jueves: filaAnterior.jueves,
@@ -249,7 +258,6 @@ app.post('/rotar-turnos', (req, res) => {
                         });
                     }
 
-                    // A la PRIMERA fila le ponemos los turnos del ÚLTIMO
                     actualizaciones.push({
                         id: filas[0].id,
                         ...turnosDelUltimo
@@ -261,8 +269,7 @@ app.post('/rotar-turnos', (req, res) => {
                 return res.json({ message: "No hubo cambios (pocos fijos)" });
             }
 
-            // 3. Ejecutar los UPDATE en la Base de Datos
-            // Usamos promesas para asegurar que todo termine antes de responder
+            // 3. Ejecutar los UPDATE
             const promesas = actualizaciones.map(act => {
                 return new Promise((resolve, reject) => {
                     const sqlUpdate = `
@@ -292,7 +299,8 @@ app.post('/rotar-turnos', (req, res) => {
         res.status(500).json({ error: "Error interno" });
     }
 });
-// 14. EDITAR SOLO EL EMPLEADO DE UNA FILA (Sin borrar los turnos)
+
+// 14. EDITAR SOLO EL EMPLEADO DE UNA FILA
 app.put('/programacion-semanal/editar-empleado', (req, res) => {
     const { idProgramacion, nuevoEmpleadoId } = req.body;
     
