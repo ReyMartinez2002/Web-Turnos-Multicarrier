@@ -1,0 +1,78 @@
+import React from 'react';
+import { Users, Calendar, Settings, LogOut } from 'lucide-react';
+
+// 1. Definimos qué propiedades espera recibir el Sidebar
+interface SidebarProps {
+  setVista: (vista: string) => void;
+  vistaActual: string;
+}
+
+// 2. Definimos qué propiedades espera cada item del menú
+interface SidebarItemProps {
+  icon: React.ReactNode;
+  text: string;
+  active?: boolean;
+  onClick?: () => void;
+}
+
+const Sidebar: React.FC<SidebarProps> = ({ setVista, vistaActual }) => {
+  return (
+    <aside className="h-screen w-64 bg-white border-r border-gray-200 flex flex-col fixed left-0 top-0 z-30">
+      <div className="p-6 border-b border-gray-100 flex items-center gap-3">
+        <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center text-white font-bold">M</div>
+        <div>
+          <h1 className="text-xl font-bold text-gray-800 tracking-tight">Multicarrier</h1>
+          <p className="text-[10px] text-gray-500 font-medium">SISTEMA DE GESTIÓN</p>
+        </div>
+      </div>
+
+      <nav className="flex-1 p-4 space-y-2 mt-2">
+        {/* Botón Turnos */}
+        <SidebarItem 
+          icon={<Calendar size={20} />} 
+          text="Programación Turnos" 
+          active={vistaActual === 'turnos'} 
+          onClick={() => setVista('turnos')}
+        />
+        
+        {/* Botón Empleados */}
+        <SidebarItem 
+          icon={<Users size={20} />} 
+          text="Base de Personal" 
+          active={vistaActual === 'empleados'} 
+          onClick={() => setVista('empleados')}
+        />
+
+        <div className="pt-4 mt-4 border-t border-gray-100">
+           {/* El botón de configuración no hace nada por ahora, así que no le pasamos onClick ni active */}
+           <SidebarItem icon={<Settings size={20} />} text="Configuración" />
+        </div>
+      </nav>
+
+      <div className="p-4 border-t border-gray-100">
+        <button className="flex items-center gap-3 w-full p-3 text-red-500 hover:bg-red-50 rounded-lg transition-all text-sm font-medium">
+          <LogOut size={18} />
+          <span>Cerrar Sesión</span>
+        </button>
+      </div>
+    </aside>
+  );
+};
+
+// Componente auxiliar con tipos definidos
+const SidebarItem: React.FC<SidebarItemProps> = ({ icon, text, active = false, onClick }) => (
+  <div 
+    onClick={onClick}
+    className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-all duration-200 group ${
+      active 
+        ? 'bg-indigo-50 text-indigo-700 shadow-sm border border-indigo-100' 
+        : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'
+    }`}>
+    <span className={`${active ? 'text-indigo-600' : 'text-gray-400 group-hover:text-gray-600'}`}>
+      {icon}
+    </span>
+    <span className="font-medium text-sm">{text}</span>
+  </div>
+);
+
+export default Sidebar;
