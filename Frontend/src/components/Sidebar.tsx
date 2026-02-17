@@ -1,7 +1,6 @@
 import React from 'react';
-import { Users, Calendar, Settings, LogOut, Briefcase } from 'lucide-react';
+import { Users, Calendar, Settings, LogOut, Briefcase, ClipboardList } from 'lucide-react'; // <--- Agrega ClipboardList
 
-// 1. ESTA PARTE ES LA CLAVE PARA ARREGLAR EL ERROR EN APP.TSX
 interface SidebarProps {
   setVista: (vista: string) => void;
   vistaActual: string;
@@ -14,7 +13,6 @@ interface SidebarItemProps {
   onClick?: () => void;
 }
 
-// 2. Aquí aplicamos la interface al componente
 const Sidebar: React.FC<SidebarProps> = ({ setVista, vistaActual }) => {
   return (
     <aside className="h-screen w-64 bg-white border-r border-gray-200 flex flex-col fixed left-0 top-0 z-30">
@@ -47,6 +45,14 @@ const Sidebar: React.FC<SidebarProps> = ({ setVista, vistaActual }) => {
           active={vistaActual === 'clientes'} 
           onClick={() => setVista('clientes')}
         />
+        
+        {/* --- NUEVO BOTÓN --- */}
+        <SidebarItem 
+          icon={<ClipboardList size={20} />} 
+          text="Programación Externos" 
+          active={vistaActual === 'externos'} 
+          onClick={() => setVista('externos')}
+        />
 
         <div className="pt-4 mt-4 border-t border-gray-100">
            <SidebarItem icon={<Settings size={20} />} text="Configuración" />
@@ -63,7 +69,6 @@ const Sidebar: React.FC<SidebarProps> = ({ setVista, vistaActual }) => {
   );
 };
 
-// Componente para los botones individuales
 const SidebarItem: React.FC<SidebarItemProps> = ({ icon, text, active = false, onClick }) => (
   <div 
     onClick={onClick}
