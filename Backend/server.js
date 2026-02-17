@@ -192,6 +192,120 @@ app.delete('/programacion-semanal/:id', (req, res) => {
         return res.json({ message: "Eliminado" });
     });
 });
+// 13. ROTAR TURNOS (Mueve el TEXTO de los horarios, deja a los empleados quietos)
+app.post('/rotar-turnos', (req, res) => {
+    try {
+        // 1. Obtener todas las filas de FIJOS ordenadas
+        const sqlGet = `
+            SELECT * FROM programacion_semanal 
+            WHERE tipo_empleado = 'Fijo'
+            ORDER BY sucursal_id, id ASC
+        `;
+        
+        db.query(sqlGet, async (err, resultados) => {
+            if (err) {
+                console.error(err);
+                return res.status(500).json({ error: "Error al leer turnos" });
+            }
+
+            // Agrupar por sucursal
+            const porSucursal = {};
+            resultados.forEach(fila => {
+                if (!porSucursal[fila.sucursal_id]) porSucursal[fila.sucursal_id] = [];
+                porSucursal[fila.sucursal_id].push(fila);
+            });
+
+            const actualizaciones = [];
+
+            // 2. Calcular la rotación (El turno de arriba baja)
+            Object.keys(porSucursal).forEach(sucursalId => {
+                const filas = porSucursal[sucursalId];
+                
+                if (filas.length > 1) {
+                    // Guardamos los turnos de la ÚLTIMA fila (para ponerlos en la primera)
+                    const ultimoIndex = filas.length - 1;
+                    const turnosDelUltimo = {
+                        sabado: filas[ultimoIndex].sabado,
+                        domingo: filas[ultimoIndex].domingo,
+                        lunes: filas[ultimoIndex].lunes,
+                        martes: filas[ultimoIndex].martes,
+                        miercoles: filas[ultimoIndex].miercoles,
+                        jueves: filas[ultimoIndex].jueves,
+                        viernes: filas[ultimoIndex].viernes
+                    };
+
+                    // Rotamos de abajo hacia arriba (Fila 2 toma datos de Fila 1)
+                    for (let i = ultimoIndex; i > 0; i--) {
+                        const filaActual = filas[i];
+                        const filaAnterior = filas[i - 1]; // Tomamos los datos del de arriba
+
+                        actualizaciones.push({
+                            id: filaActual.id, // ID de la fila (Empleado X)
+                            // Le ponemos los turnos del empleado anterior
+                            sabado: filaAnterior.sabado, domingo: filaAnterior.domingo,
+                            lunes: filaAnterior.lunes, martes: filaAnterior.martes,
+                            miercoles: filaAnterior.miercoles, jueves: filaAnterior.jueves,
+                            viernes: filaAnterior.viernes
+                        });
+                    }
+
+                    // A la PRIMERA fila le ponemos los turnos del ÚLTIMO
+                    actualizaciones.push({
+                        id: filas[0].id,
+                        ...turnosDelUltimo
+                    });
+                }
+            });
+
+            if (actualizaciones.length === 0) {
+                return res.json({ message: "No hubo cambios (pocos fijos)" });
+            }
+
+            // 3. Ejecutar los UPDATE en la Base de Datos
+            // Usamos promesas para asegurar que todo termine antes de responder
+            const promesas = actualizaciones.map(act => {
+                return new Promise((resolve, reject) => {
+                    const sqlUpdate = `
+                        UPDATE programacion_semanal 
+                        SET sabado=?, domingo=?, lunes=?, martes=?, miercoles=?, jueves=?, viernes=?
+                        WHERE id=?
+                    `;
+                    const valores = [
+                        act.sabado, act.domingo, act.lunes, act.martes, 
+                        act.miercoles, act.jueves, act.viernes, 
+                        act.id
+                    ];
+
+                    db.query(sqlUpdate, valores, (err, result) => {
+                        if (err) reject(err);
+                        else resolve(result);
+                    });
+                });
+            });
+
+            await Promise.all(promesas);
+            res.json({ message: "Rotación de turnos completada exitosamente" });
+        });
+
+    } catch (error) {
+        console.error("Error en servidor:", error);
+        res.status(500).json({ error: "Error interno" });
+    }
+});
+// 14. EDITAR SOLO EL EMPLEADO DE UNA FILA (Sin borrar los turnos)
+app.put('/programacion-semanal/editar-empleado', (req, res) => {
+    const { idProgramacion, nuevoEmpleadoId } = req.body;
+    
+    const sql = "UPDATE programacion_semanal SET empleado_id = ? WHERE id = ?";
+    
+    db.query(sql, [nuevoEmpleadoId, idProgramacion], (err, result) => {
+        if (err) {
+            console.error(err);
+            return res.status(500).json({ error: "Error al actualizar empleado" });
+        }
+        return res.json({ message: "Empleado actualizado correctamente" });
+    });
+});
 
 const PORT = 3001;
 app.listen(PORT, () => {
