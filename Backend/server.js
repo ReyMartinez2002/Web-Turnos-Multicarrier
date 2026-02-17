@@ -405,11 +405,22 @@ app.post('/turnos-externos', (req, res) => {
       if (err2) return res.status(500).json(err2);
 
       for (const p of turnosPPY) {
-        const rangoPPY = obtenerRangoHorario(p[nombreDia]);
-        if (rangoPPY && verificarCruce(inicioNuevo, finNuevo, rangoPPY.inicio, rangoPPY.fin)) {
-          return res.status(409).json({ message: `¡Cruce! Tiene turno en PPY ${p.sucursal}` });
-        }
-      }
+  const rangoPPY = obtenerRangoHorario(p[nombreDia]);
+  if (rangoPPY && verificarCruce(inicioNuevo, finNuevo, rangoPPY.inicio, rangoPPY.fin)) {
+    return res.status(409).json({
+      code: 'CRUCE_PPY',
+      message: `¡Cruce! Tiene turno en PPY.`,
+      detalle: {
+        sucursal: p.sucursal,
+        dia: nombreDia,
+        turnoTexto: p[nombreDia],
+        rango: `${rangoPPY.inicio}:00 - ${rangoPPY.fin}:00`,
+        nuevoTurno: `${data.horaIni} - ${data.horaFin}`,
+        fecha: data.fecha,
+      },
+    });
+  }
+}
 
       return insertarTurnoExterno(req, res);
     });
