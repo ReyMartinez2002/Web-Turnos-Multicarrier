@@ -425,6 +425,69 @@ app.post('/replicar-programacion', (req, res) => {
         });
     });
 });
+// 16. Obtener lista de empresas
+app.get('/empresas-lista', (req, res) => {
+    db.query("SELECT * FROM empresas_lista ORDER BY nombre ASC", (err, result) => {
+        if (err) return res.json(err);
+        return res.json(result);
+    });
+});
+
+// 17. Crear nueva empresa en la lista
+app.post('/empresas-lista', (req, res) => {
+    const { nombre } = req.body;
+    db.query("INSERT INTO empresas_lista (nombre) VALUES (?)", [nombre.toUpperCase()], (err, result) => {
+        if (err) {
+            if (err.code === 'ER_DUP_ENTRY') return res.status(400).json({ message: "La empresa ya existe" });
+            return res.status(500).json(err);
+        }
+        return res.json({ message: "Empresa agregada", id: result.insertId });
+    });
+});
+
+// 18. Eliminar empresa de la lista
+app.delete('/empresas-lista/:id', (req, res) => {
+    db.query("DELETE FROM empresas_lista WHERE id = ?", [req.params.id], (err, result) => {
+        if (err) return res.json(err);
+        return res.json({ message: "Empresa eliminada" });
+    });
+});
+// 19. EDITAR CLIENTE / SUCURSAL
+app.put('/clientes/:id', (req, res) => {
+    const { id } = req.params;
+    const { empresa, sucursal, idCliente, idInterwap, direccion } = req.body;
+    
+    const sql = `
+        UPDATE clientes_sucursales 
+        SET empresa = ?, sucursal = ?, id_cliente_interno = ?, id_interwap = ?, direccion = ?
+        WHERE id = ?
+    `;
+    
+    db.query(sql, [empresa, sucursal, idCliente, idInterwap, direccion, id], (err, result) => {
+        if (err) return res.status(500).json(err);
+        return res.json({ message: "Cliente actualizado correctamente" });
+    });
+});
+
+// 20. ELIMINAR CLIENTE / SUCURSAL
+app.delete('/clientes/:id', (req, res) => {
+    const { id } = req.params;
+    
+    // Primero revisamos si tiene turnos asignados (Integridad Referencial)
+    // Opcional: Podrías borrar todo en cascada, pero es mejor avisar si hay datos
+    const sql = "DELETE FROM clientes_sucursales WHERE id = ?";
+    
+    db.query(sql, [id], (err, result) => {
+        if (err) {
+            // Error común: Integridad referencial (tiene turnos asociados)
+            if (err.code === 'ER_ROW_IS_REFERENCED_2') {
+                return res.status(400).json({ error: "No se puede borrar: Esta sede tiene turnos o empleados asignados." });
+            }
+            return res.status(500).json(err);
+        }
+        return res.json({ message: "Cliente eliminado" });
+    });
+});
 
 const PORT = 3001;
 app.listen(PORT, () => {
