@@ -15,6 +15,7 @@ import {
   Upload,
   Filter,
   Layers,
+  Copy,
 } from 'lucide-react';
 
 interface EmpleadoBD {
@@ -136,6 +137,17 @@ const ProgramacionExternos = () => {
   const [masivoEmpleadoTerm, setMasivoEmpleadoTerm] = useState('');
   const [masivoEmpleadoId, setMasivoEmpleadoId] = useState<number | null>(null);
   const [creandoMasivo, setCreandoMasivo] = useState(false);
+
+  // ✅ modal clonar
+  const [modalClonar, setModalClonar] = useState(false);
+  const [clonarSucursalTerm, setClonarSucursalTerm] = useState('');
+  const [clonarSucursalId, setClonarSucursalId] = useState<number | null>(null); // opcional
+  const [clonarOrigenIni, setClonarOrigenIni] = useState('');
+  const [clonarOrigenFin, setClonarOrigenFin] = useState('');
+  const [clonarDestinoIni, setClonarDestinoIni] = useState('');
+  const [clonarIncluirVacantes, setClonarIncluirVacantes] = useState(true);
+  const [clonarIncluirAsignados, setClonarIncluirAsignados] = useState(true);
+  const [clonando, setClonando] = useState(false);
 
   const [buscarEmpleado, setBuscarEmpleado] = useState('');
   const [errorModal, setErrorModal] = useState<ErrorDetalleCruce | null>(null);
@@ -584,10 +596,7 @@ const ProgramacionExternos = () => {
       });
 
       const data = (await res.json().catch(() => null)) as
-        | {
-            message?: string;
-            resumen?: { recibidos?: number; validos?: number; insertados?: number; ppyMarcados?: number };
-          }
+        | { message?: string; resumen?: { insertados?: number; ppyMarcados?: number } }
         | null;
 
       if (!res.ok) {
@@ -599,11 +608,7 @@ const ProgramacionExternos = () => {
         return;
       }
 
-      alert(
-        `Importación completa:\n` +
-          `Insertados: ${data?.resumen?.insertados ?? '-'}\n` +
-          `PPY marcados: ${data?.resumen?.ppyMarcados ?? '-'}`
-      );
+      alert(`Importación completa:\nInsertados: ${data?.resumen?.insertados ?? '-'}\nPPY marcados: ${data?.resumen?.ppyMarcados ?? '-'}`);
 
       await cargarTurnos();
     } catch (e) {
@@ -643,19 +648,21 @@ const ProgramacionExternos = () => {
 
   const sucursalesFiltradasMasivo = useMemo(() => {
     const term = masivoSucursalTerm.trim().toLowerCase();
-    if (!term) return listaSucursales.slice(0, 40); // limita para no renderizar 1000
-    return listaSucursales
-      .filter((s) => `${s.empresa} ${s.sucursal}`.toLowerCase().includes(term))
-      .slice(0, 50);
+    if (!term) return listaSucursales.slice(0, 40);
+    return listaSucursales.filter((s) => `${s.empresa} ${s.sucursal}`.toLowerCase().includes(term)).slice(0, 50);
   }, [listaSucursales, masivoSucursalTerm]);
 
   const empleadosFiltradosMasivo = useMemo(() => {
     const term = masivoEmpleadoTerm.trim().toLowerCase();
     if (!term) return listaEmpleados.slice(0, 40);
-    return listaEmpleados
-      .filter((e) => `${e.nombre_completo} ${e.documento}`.toLowerCase().includes(term))
-      .slice(0, 50);
+    return listaEmpleados.filter((e) => `${e.nombre_completo} ${e.documento}`.toLowerCase().includes(term)).slice(0, 50);
   }, [listaEmpleados, masivoEmpleadoTerm]);
+
+  const sucursalesFiltradasClonar = useMemo(() => {
+    const term = clonarSucursalTerm.trim().toLowerCase();
+    if (!term) return listaSucursales.slice(0, 40);
+    return listaSucursales.filter((s) => `${s.empresa} ${s.sucursal}`.toLowerCase().includes(term)).slice(0, 50);
+  }, [listaSucursales, clonarSucursalTerm]);
 
   // --- VISUALIZACIÓN (con filtros avanzados) ---
   const procesarTurnos = () => {
@@ -738,7 +745,7 @@ const ProgramacionExternos = () => {
           dias: diasSeleccionados,
           horaIni: masivoHoraIni,
           horaFin: masivoHoraFin,
-          empleadoId: masivoEmpleadoId, // puede ser null => vacantes
+          empleadoId: masivoEmpleadoId,
         }),
       });
 
@@ -772,6 +779,98 @@ const ProgramacionExternos = () => {
     }
   };
 
+  // --- CLONAR (sin duplicar en destino) ---
+  const resetClonar = () => {
+    setClonarSucursalTerm('');
+    setClonarSucursalId(null);
+    setClonarOrigenIni('');
+    setClonarOrigenFin('');
+    setClonarDestinoIni('');
+    setClonarIncluirVacantes(true);
+    setClonarIncluirAsignados(true);
+  };
+
+  const clonarTurnos = async () => {
+    if (!clonarOrigenIni || !clonarOrigenFin || !clonarDestinoIni) {
+      setErrorModal({
+        titulo: 'Faltan datos',
+        mensaje: 'Origen inicio/fin y destino inicio son obligatorios.',
+        campos: [],
+      });
+      return;
+    }
+    if (!clonarIncluirVacantes && !clonarIncluirAsignados) {
+      setErrorModal({
+        titulo: 'Selección inválida',
+        mensaje: 'Debes incluir vacantes o incluir asignados (al menos uno).',
+        campos: [],
+      });
+      return;
+    }
+
+    setClonando(true);
+    try {
+      const res = await fetch('http://localhost:3001/turnos-externos/clonar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...(clonarSucursalId ? { sucursalId: clonarSucursalId } : {}),
+          fechaOrigenInicio: clonarOrigenIni,
+          fechaOrigenFin: clonarOrigenFin,
+          fechaDestinoInicio: clonarDestinoIni,
+          incluirVacantes: clonarIncluirVacantes,
+          incluirAsignados: clonarIncluirAsignados,
+        }),
+      });
+
+      const data = (await res.json().catch(() => null)) as
+        | {
+            message?: string;
+            resumen?: {
+              origen?: number;
+              candidatos?: number;
+              omitidosPorDuplicado?: number;
+              insertados?: number;
+              shiftDays?: number;
+              ppyMarcados?: number;
+            };
+          }
+        | null;
+
+      if (!res.ok) {
+        setErrorModal({
+          titulo: 'Error clonando',
+          mensaje: data?.message || `Error HTTP ${res.status}`,
+          campos: [],
+        });
+        return;
+      }
+
+      alert(
+        `Clonación lista.\n` +
+          `Origen: ${data?.resumen?.origen ?? '-'}\n` +
+          `Candidatos: ${data?.resumen?.candidatos ?? '-'}\n` +
+          `Omitidos (ya existían): ${data?.resumen?.omitidosPorDuplicado ?? '-'}\n` +
+          `Insertados: ${data?.resumen?.insertados ?? '-'}\n` +
+          `Shift(días): ${data?.resumen?.shiftDays ?? '-'}\n` +
+          `PPY marcados: ${data?.resumen?.ppyMarcados ?? '-'}`
+      );
+
+      setModalClonar(false);
+      resetClonar();
+      await cargarTurnos();
+    } catch (e) {
+      console.error(e);
+      setErrorModal({
+        titulo: 'Error de conexión',
+        mensaje: 'No se pudo contactar el servidor.',
+        campos: [],
+      });
+    } finally {
+      setClonando(false);
+    }
+  };
+
   return (
     <div className="space-y-6 p-1">
       {/* HEADER */}
@@ -792,6 +891,26 @@ const ProgramacionExternos = () => {
               className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>
+
+          <button
+            onClick={() => {
+              resetClonar();
+              // tip: si ya tienes un filtro de sucursal aplicado, lo pre-seleccionamos
+              if (fSucursalId) {
+                const id = Number(fSucursalId);
+                const suc = listaSucursales.find((s) => s.id === id);
+                if (suc) {
+                  setClonarSucursalId(id);
+                  setClonarSucursalTerm(`${suc.empresa} - ${suc.sucursal} (ID ${suc.id})`);
+                }
+              }
+              setModalClonar(true);
+            }}
+            className="bg-indigo-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-indigo-700 transition-colors font-medium whitespace-nowrap"
+            title="Clonar turnos a otra fecha (evita duplicados)"
+          >
+            <Copy size={18} /> Clonar
+          </button>
 
           <button
             onClick={() => {
@@ -1014,6 +1133,109 @@ const ProgramacionExternos = () => {
         </div>
       </div>
 
+      {/* MODAL CLONAR */}
+      {modalClonar && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl overflow-hidden border border-gray-200">
+            <div className="bg-gradient-to-r from-indigo-700 to-indigo-600 p-4 flex justify-between items-center text-white">
+              <h3 className="font-extrabold text-lg flex gap-2 items-center">
+                <Copy /> Clonar turnos (sin duplicar)
+              </h3>
+              <button onClick={() => setModalClonar(false)} className="hover:text-gray-200">
+                <X />
+              </button>
+            </div>
+
+            <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="md:col-span-2">
+                <label className="block text-xs font-bold mb-1 text-gray-700">
+                  Sucursal (opcional) — si la dejas vacía clona TODAS las sucursales del rango origen
+                </label>
+                <input
+                  value={clonarSucursalTerm}
+                  onChange={(e) => {
+                    setClonarSucursalTerm(e.target.value);
+                    setClonarSucursalId(null);
+                  }}
+                  placeholder="Escribe para buscar sucursal..."
+                  className="w-full border rounded-xl p-3"
+                />
+                <div className="mt-2 max-h-44 overflow-auto border rounded-xl bg-white">
+                  <button
+                    onClick={() => {
+                      setClonarSucursalId(null);
+                      setClonarSucursalTerm('');
+                    }}
+                    className={`w-full text-left px-3 py-2 hover:bg-slate-50 transition ${clonarSucursalId === null ? 'bg-slate-50' : ''}`}
+                  >
+                    <div className="font-bold text-sm text-slate-800">Todas las sucursales</div>
+                    <div className="text-xs text-gray-600">Clona lo que exista en el rango origen (todas las sedes).</div>
+                  </button>
+
+                  {sucursalesFiltradasClonar.map((s) => (
+                    <button
+                      key={s.id}
+                      onClick={() => {
+                        setClonarSucursalId(s.id);
+                        setClonarSucursalTerm(`${s.empresa} - ${s.sucursal} (ID ${s.id})`);
+                      }}
+                      className={`w-full text-left px-3 py-2 hover:bg-indigo-50 transition ${clonarSucursalId === s.id ? 'bg-indigo-100' : ''}`}
+                    >
+                      <div className="font-bold text-sm text-gray-800">{s.empresa}</div>
+                      <div className="text-xs text-gray-600">
+                        {s.sucursal} <span className="text-gray-400">— ID {s.id}</span>
+                      </div>
+                    </button>
+                  ))}
+
+                  {sucursalesFiltradasClonar.length === 0 && (
+                    <div className="p-3 text-sm text-gray-500">No hay coincidencias.</div>
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold mb-1 text-gray-700">Origen: Fecha inicio</label>
+                <input value={clonarOrigenIni} onChange={(e) => setClonarOrigenIni(e.target.value)} type="date" className="w-full border rounded-xl p-3" />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold mb-1 text-gray-700">Origen: Fecha fin</label>
+                <input value={clonarOrigenFin} onChange={(e) => setClonarOrigenFin(e.target.value)} type="date" className="w-full border rounded-xl p-3" />
+              </div>
+
+              <div className="md:col-span-2">
+                <label className="block text-xs font-bold mb-1 text-gray-700">Destino: Nueva fecha inicio</label>
+                <input value={clonarDestinoIni} onChange={(e) => setClonarDestinoIni(e.target.value)} type="date" className="w-full border rounded-xl p-3" />
+                <div className="text-[11px] text-gray-500 mt-1">
+                  Se clona moviendo el rango origen por la diferencia de días (shift). Si ya existe un turno igual en destino, se omite.
+                </div>
+              </div>
+
+              <div className="md:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <label className="flex items-center gap-2 text-sm font-semibold text-gray-700 bg-gray-50 border rounded-xl p-3">
+                  <input type="checkbox" checked={clonarIncluirAsignados} onChange={(e) => setClonarIncluirAsignados(e.target.checked)} />
+                  Incluir asignados
+                </label>
+                <label className="flex items-center gap-2 text-sm font-semibold text-gray-700 bg-gray-50 border rounded-xl p-3">
+                  <input type="checkbox" checked={clonarIncluirVacantes} onChange={(e) => setClonarIncluirVacantes(e.target.checked)} />
+                  Incluir vacantes
+                </label>
+              </div>
+            </div>
+
+            <div className="p-4 border-t bg-gray-50 flex justify-end gap-3">
+              <button onClick={() => setModalClonar(false)} className="px-4 py-2 text-gray-700 font-semibold hover:bg-gray-200 rounded-xl" disabled={clonando}>
+                Cancelar
+              </button>
+              <button onClick={clonarTurnos} className="px-6 py-2 bg-indigo-600 text-white font-extrabold rounded-xl hover:bg-indigo-700 flex items-center gap-2 disabled:opacity-60" disabled={clonando}>
+                <Check size={18} /> {clonando ? 'Clonando...' : 'Clonar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* MODAL MASIVO */}
       {modalMasivo && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
@@ -1028,7 +1250,6 @@ const ProgramacionExternos = () => {
             </div>
 
             <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* Sucursal buscable */}
               <div className="md:col-span-2">
                 <label className="block text-xs font-bold mb-1 text-gray-700">Sucursal / Cliente (buscable)</label>
                 <input
@@ -1037,7 +1258,7 @@ const ProgramacionExternos = () => {
                     setMasivoSucursalTerm(e.target.value);
                     setMasivoSucursalId(null);
                   }}
-                  placeholder="Escribe para buscar: ej 'Bella Suiza' o 'Pastaio'..."
+                  placeholder="Escribe para buscar..."
                   className="w-full border rounded-xl p-3"
                 />
                 <div className="mt-2 max-h-44 overflow-auto border rounded-xl bg-white">
@@ -1048,9 +1269,7 @@ const ProgramacionExternos = () => {
                         setMasivoSucursalId(s.id);
                         setMasivoSucursalTerm(`${s.empresa} - ${s.sucursal} (ID ${s.id})`);
                       }}
-                      className={`w-full text-left px-3 py-2 hover:bg-indigo-50 transition ${
-                        masivoSucursalId === s.id ? 'bg-indigo-100' : ''
-                      }`}
+                      className={`w-full text-left px-3 py-2 hover:bg-indigo-50 transition ${masivoSucursalId === s.id ? 'bg-indigo-100' : ''}`}
                     >
                       <div className="font-bold text-sm text-gray-800">{s.empresa}</div>
                       <div className="text-xs text-gray-600">
@@ -1058,9 +1277,7 @@ const ProgramacionExternos = () => {
                       </div>
                     </button>
                   ))}
-                  {sucursalesFiltradasMasivo.length === 0 && (
-                    <div className="p-3 text-sm text-gray-500">No hay coincidencias.</div>
-                  )}
+                  {sucursalesFiltradasMasivo.length === 0 && <div className="p-3 text-sm text-gray-500">No hay coincidencias.</div>}
                 </div>
               </div>
 
@@ -1100,7 +1317,6 @@ const ProgramacionExternos = () => {
                 <input value={masivoHoraFin} onChange={(e) => setMasivoHoraFin(e.target.value)} type="time" className="w-full border rounded-xl p-3" />
               </div>
 
-              {/* Empleado buscable (opcional) */}
               <div className="md:col-span-2">
                 <label className="block text-xs font-bold mb-1 text-gray-700">Empleado (opcional) — si lo dejas vacío quedan VACANTES</label>
                 <input
@@ -1131,34 +1347,22 @@ const ProgramacionExternos = () => {
                         setMasivoEmpleadoId(e.id);
                         setMasivoEmpleadoTerm(`${e.nombre_completo} (CC ${e.documento})`);
                       }}
-                      className={`w-full text-left px-3 py-2 hover:bg-indigo-50 transition ${
-                        masivoEmpleadoId === e.id ? 'bg-indigo-100' : ''
-                      }`}
+                      className={`w-full text-left px-3 py-2 hover:bg-indigo-50 transition ${masivoEmpleadoId === e.id ? 'bg-indigo-100' : ''}`}
                     >
                       <div className="font-bold text-sm text-gray-800">{e.nombre_completo}</div>
                       <div className="text-xs text-gray-600">CC: {e.documento} — {e.cargo}</div>
                     </button>
                   ))}
-                  {empleadosFiltradosMasivo.length === 0 && (
-                    <div className="p-3 text-sm text-gray-500">No hay coincidencias.</div>
-                  )}
+                  {empleadosFiltradosMasivo.length === 0 && <div className="p-3 text-sm text-gray-500">No hay coincidencias.</div>}
                 </div>
               </div>
             </div>
 
             <div className="p-4 border-t bg-gray-50 flex justify-end gap-3">
-              <button
-                onClick={() => setModalMasivo(false)}
-                className="px-4 py-2 text-gray-700 font-semibold hover:bg-gray-200 rounded-xl"
-                disabled={creandoMasivo}
-              >
+              <button onClick={() => setModalMasivo(false)} className="px-4 py-2 text-gray-700 font-semibold hover:bg-gray-200 rounded-xl" disabled={creandoMasivo}>
                 Cancelar
               </button>
-              <button
-                onClick={crearMasivo}
-                className="px-6 py-2 bg-green-600 text-white font-extrabold rounded-xl hover:bg-green-700 flex items-center gap-2 disabled:opacity-60"
-                disabled={creandoMasivo}
-              >
+              <button onClick={crearMasivo} className="px-6 py-2 bg-green-600 text-white font-extrabold rounded-xl hover:bg-green-700 flex items-center gap-2 disabled:opacity-60" disabled={creandoMasivo}>
                 <Check size={18} /> {creandoMasivo ? 'Creando...' : 'Crear turnos'}
               </button>
             </div>
@@ -1166,7 +1370,7 @@ const ProgramacionExternos = () => {
         </div>
       )}
 
-      {/* MODAL CREAR/EDITAR (tu modal actual, sin cambios grandes) */}
+      {/* MODAL CREAR/EDITAR (sin cambios) */}
       {modalAbierto && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl h-[90vh] overflow-y-auto animate-in zoom-in duration-200 flex flex-col">
@@ -1195,23 +1399,14 @@ const ProgramacionExternos = () => {
               <div className="bg-blue-50 p-4 rounded-lg border border-blue-100 md:col-span-2">
                 <label className="block text-xs font-bold mb-1 text-blue-700">2. EMPLEADO (Opcional)</label>
 
-                <input
-                  value={buscarEmpleado}
-                  onChange={(e) => setBuscarEmpleado(e.target.value)}
-                  placeholder="Buscar por nombre o CC..."
-                  className="w-full border rounded-lg p-2 mb-2"
-                />
+                <input value={buscarEmpleado} onChange={(e) => setBuscarEmpleado(e.target.value)} placeholder="Buscar por nombre o CC..." className="w-full border rounded-lg p-2 mb-2" />
 
                 {fijosDeLaSede.length > 0 && (
                   <div className="mb-3 p-2 bg-yellow-50 rounded border border-yellow-200">
                     <span className="text-xs font-bold text-yellow-700 block mb-1">⭐ Sugeridos (Fijos):</span>
                     <div className="flex gap-2 flex-wrap">
                       {fijosDeLaSede.map((f) => (
-                        <button
-                          key={f.id}
-                          onClick={(e) => handleEmpleadoSelect(e, f.id)}
-                          className="text-xs bg-white border border-yellow-300 px-2 py-1 rounded hover:bg-yellow-100"
-                        >
+                        <button key={f.id} onClick={(e) => handleEmpleadoSelect(e, f.id)} className="text-xs bg-white border border-yellow-300 px-2 py-1 rounded hover:bg-yellow-100">
                           {f.nombre_completo}
                         </button>
                       ))}
@@ -1239,21 +1434,11 @@ const ProgramacionExternos = () => {
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="block text-xs font-bold mb-1">Inicio</label>
-                  <input
-                    type="time"
-                    className="w-full border p-2 rounded"
-                    value={formulario.horaIni}
-                    onChange={(e) => actualizarHoras(e.target.value, formulario.horaFin)}
-                  />
+                  <input type="time" className="w-full border p-2 rounded" value={formulario.horaIni} onChange={(e) => actualizarHoras(e.target.value, formulario.horaFin)} />
                 </div>
                 <div>
                   <label className="block text-xs font-bold mb-1">Fin</label>
-                  <input
-                    type="time"
-                    className="w-full border p-2 rounded"
-                    value={formulario.horaFin}
-                    onChange={(e) => actualizarHoras(formulario.horaIni, e.target.value)}
-                  />
+                  <input type="time" className="w-full border p-2 rounded" value={formulario.horaFin} onChange={(e) => actualizarHoras(formulario.horaIni, e.target.value)} />
                 </div>
               </div>
             </div>
@@ -1298,10 +1483,7 @@ const ProgramacionExternos = () => {
             )}
 
             <div className="flex items-center justify-end gap-2 p-4 border-t bg-gray-50">
-              <button
-                onClick={() => setErrorModal(null)}
-                className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 font-semibold hover:bg-gray-200 transition"
-              >
+              <button onClick={() => setErrorModal(null)} className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 font-semibold hover:bg-gray-200 transition">
                 Cerrar
               </button>
             </div>
