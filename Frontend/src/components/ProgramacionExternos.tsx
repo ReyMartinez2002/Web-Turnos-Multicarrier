@@ -45,19 +45,25 @@ interface TurnoExterno {
   estadoEjecucion: string;
 }
 
+type ErrorDetalleCruce = {
+  titulo: string;
+  mensaje: string;
+  campos: { label: string; value: string }[];
+};
+
 const ProgramacionExternos = () => {
   const [listaEmpleados, setListaEmpleados] = useState<EmpleadoBD[]>([]);
   const [listaSucursales, setListaSucursales] = useState<SucursalBD[]>([]);
   const [turnos, setTurnos] = useState<TurnoExterno[]>([]);
   const [fijosDeLaSede, setFijosDeLaSede] = useState<EmpleadoBD[]>([]);
 
-  // FILTROS Y ORDENAMIENTO
   const [busqueda, setBusqueda] = useState('');
   const [ordenFecha, setOrdenFecha] = useState<'asc' | 'desc'>('desc');
 
-  // MODALES
   const [modalAbierto, setModalAbierto] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
+
+  const [errorModal, setErrorModal] = useState<ErrorDetalleCruce | null>(null);
 
   const turnoVacio: TurnoExterno = {
     id: 0,
@@ -100,6 +106,11 @@ const ProgramacionExternos = () => {
       setListaSucursales(dataSuc);
     } catch (error) {
       console.error('Error cargando listas', error);
+      setErrorModal({
+        titulo: 'Error cargando datos',
+        mensaje: 'No se pudieron cargar empleados / sucursales.',
+        campos: [],
+      });
     }
   }, []);
 
@@ -111,7 +122,7 @@ const ProgramacionExternos = () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const turnosFormateados = data.map((t: any) => ({
         id: t.id,
-        empleadoId: t.empleado_id, // Puede venir null
+        empleadoId: t.empleado_id,
         sucursalId: t.sucursal_id,
         nombre: t.nombre_completo || t.nombre_empleado,
         cc: t.documento,
@@ -131,7 +142,6 @@ const ProgramacionExternos = () => {
         idTurno: t.id_turno,
         asignacion: t.asignacion,
         estadoTurno: t.estado_turno,
-        // Defaults si la BD no trae estos campos:
         tipoTurno: t.tipo_turno ?? '',
         franjaHoraria: t.franja_horaria ?? '',
         estadoEjecucion: t.estado_ejecucion ?? 'Pendiente',
@@ -140,10 +150,14 @@ const ProgramacionExternos = () => {
       setTurnos(turnosFormateados);
     } catch (error) {
       console.error('Error cargando turnos', error);
+      setErrorModal({
+        titulo: 'Error cargando turnos',
+        mensaje: 'No se pudo cargar la tabla de turnos.',
+        campos: [],
+      });
     }
   }, []);
 
-  // FIX ESLINT react-hooks/set-state-in-effect:
   useEffect(() => {
     let cancelado = false;
 
@@ -225,6 +239,17 @@ const ProgramacionExternos = () => {
         cargo: emp.cargo,
         asignacion: emp.cargo,
       }));
+    } else {
+      // si eligen "-- Sin asignar --"
+      setFormulario((prev) => ({
+        ...prev,
+        empleadoId: null,
+        nombre: '',
+        cc: '',
+        idInterMen: '',
+        cargo: '',
+        asignacion: '',
+      }));
     }
   };
 
@@ -239,6 +264,7 @@ const ProgramacionExternos = () => {
         empresa: suc.empresa,
         idSucursalInterwap: suc.id_interwap,
       }));
+
       try {
         const res = await fetch(`http://localhost:3001/fijos/${suc.id}`);
         const dataFijos = await res.json();
@@ -253,12 +279,14 @@ const ProgramacionExternos = () => {
   const abrirEditar = (turno: TurnoExterno) => {
     setFormulario(turno);
     setIsEditing(true);
+
     if (turno.sucursalId) {
       fetch(`http://localhost:3001/fijos/${turno.sucursalId}`)
         .then((res) => res.json())
         .then((data) => setFijosDeLaSede(data))
         .catch((err) => console.error(err));
     }
+
     setModalAbierto(true);
   };
 
@@ -277,15 +305,31 @@ const ProgramacionExternos = () => {
     try {
       const res = await fetch(`http://localhost:3001/turnos-externos/${id}/liberar`, { method: 'PATCH' });
       if (res.ok) cargarTurnos();
-      else alert('Error al liberar turno');
+      else {
+        setErrorModal({
+          titulo: 'No se pudo liberar',
+          mensaje: 'El servidor respondió con error al intentar dejar el turno vacante.',
+          campos: [],
+        });
+      }
     } catch (error) {
       console.error(error);
+      setErrorModal({
+        titulo: 'Error de conexión',
+        mensaje: 'No se pudo contactar el servidor para liberar el turno.',
+        campos: [],
+      });
     }
   };
 
   const guardarTurnoBD = async () => {
     if (formulario.sucursalId === 0 || !formulario.fecha) {
-      return alert('Sucursal y Fecha son obligatorios');
+      setErrorModal({
+        titulo: 'Faltan datos',
+        mensaje: 'Sucursal y Fecha son obligatorios.',
+        campos: [],
+      });
+      return;
     }
 
     try {
@@ -299,14 +343,42 @@ const ProgramacionExternos = () => {
       });
 
       if (response.ok) {
-        alert(isEditing ? 'Actualizado' : 'Guardado');
         setModalAbierto(false);
-        cargarTurnos();
-      } else {
-        alert('Error guardando');
+        await cargarTurnos();
+        return;
       }
+
+      const errData = await response.json().catch(() => null);
+
+      if (response.status === 409 && errData?.code === 'CRUCE_PPY' && errData?.detalle) {
+        const d = errData.detalle;
+        setErrorModal({
+          titulo: 'Cruce de turnos detectado',
+          mensaje: errData.message || 'El empleado ya tiene un turno asignado en otra sede (PPY).',
+          campos: [
+            { label: 'Sucursal (PPY)', value: String(d.sucursal ?? '-') },
+            { label: 'Día', value: String(d.dia ?? '-') },
+            { label: 'Turno PPY (texto)', value: String(d.turnoTexto ?? '-') },
+            { label: 'Rango PPY', value: String(d.rango ?? '-') },
+            { label: 'Nuevo turno', value: String(d.nuevoTurno ?? '-') },
+            { label: 'Fecha', value: String(d.fecha ?? '-') },
+          ],
+        });
+        return;
+      }
+
+      setErrorModal({
+        titulo: 'No se pudo guardar',
+        mensaje: errData?.message || errData?.mensaje || errData?.error || `Error HTTP ${response.status}`,
+        campos: [],
+      });
     } catch (error) {
       console.error(error);
+      setErrorModal({
+        titulo: 'Error de conexión',
+        mensaje: 'No se pudo contactar el servidor. Revisa que el backend esté corriendo en http://localhost:3001',
+        campos: [],
+      });
     }
   };
 
@@ -465,7 +537,7 @@ const ProgramacionExternos = () => {
         </div>
       </div>
 
-      {/* MODAL */}
+      {/* MODAL CREAR/EDITAR */}
       {modalAbierto && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl h-[90vh] overflow-y-auto animate-in zoom-in duration-200 flex flex-col">
@@ -509,7 +581,7 @@ const ProgramacionExternos = () => {
                     </div>
                   </div>
                 )}
-                <select className="w-full border p-2 rounded mb-2 bg-white" onChange={handleEmpleadoSelect} value={formulario.empleadoId || ''}>
+                <select className="w-full border p-2 rounded mb-2 bg-white" onChange={handleEmpleadoSelect} value={formulario.empleadoId ?? ''}>
                   <option value="">-- Sin Asignar (Vacante) --</option>
                   {listaEmpleados.map((e) => (
                     <option key={e.id} value={e.id}>
@@ -551,6 +623,49 @@ const ProgramacionExternos = () => {
               </button>
               <button onClick={guardarTurnoBD} className="px-6 py-2 bg-green-600 text-white font-bold rounded hover:bg-green-700 flex items-center gap-2">
                 <Check size={18} /> {isEditing ? 'ACTUALIZAR' : 'GUARDAR'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL MODERNO DE ERRORES */}
+      {errorModal && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div className="w-full max-w-xl rounded-2xl bg-white shadow-2xl border border-gray-200 overflow-hidden animate-in zoom-in duration-200">
+            <div className="flex items-start justify-between gap-4 p-5 bg-gradient-to-r from-red-600 to-rose-600 text-white">
+              <div>
+                <h3 className="text-lg font-extrabold">{errorModal.titulo}</h3>
+                <p className="text-sm text-white/90 mt-1">{errorModal.mensaje}</p>
+              </div>
+              <button
+                onClick={() => setErrorModal(null)}
+                className="p-2 rounded-lg hover:bg-white/10 transition"
+                aria-label="Cerrar"
+              >
+                <X />
+              </button>
+            </div>
+
+            {errorModal.campos.length > 0 && (
+              <div className="p-5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {errorModal.campos.map((c, idx) => (
+                    <div key={idx} className="rounded-xl border border-gray-200 bg-gray-50 p-3">
+                      <div className="text-[11px] font-bold text-gray-500 uppercase tracking-wide">{c.label}</div>
+                      <div className="text-sm font-semibold text-gray-800 break-words">{c.value}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-center justify-end gap-2 p-4 border-t bg-gray-50">
+              <button
+                onClick={() => setErrorModal(null)}
+                className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 font-semibold hover:bg-gray-200 transition"
+              >
+                Cerrar
               </button>
             </div>
           </div>
