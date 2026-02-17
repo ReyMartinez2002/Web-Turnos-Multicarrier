@@ -51,15 +51,20 @@ const TablaTurnos = () => {
       const resProg = await fetch('http://localhost:3001/programacion-semanal');
       const dataProg = await resProg.json();
 
+      // --- FILTRO CLAVE: SOLO PAN PA YA ---
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const soloPanPaYa = dataSuc.filter((s: any) => s.empresa === 'PAN PA YA');
+
       // 3. Organizar los datos
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const estructura: SucursalGrid[] = dataSuc.map((s: any) => {
+      const estructura: SucursalGrid[] = soloPanPaYa.map((s: any) => {
+        // Buscar empleados programados en esta sucursal
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const empleadosDeSucursal = dataProg.filter((p: any) => p.sucursal_id === s.id);
 
         return {
           id: s.id,
-          nombre: `${s.empresa} - ${s.sucursal}`,
+          nombre: s.sucursal, 
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           empleados: empleadosDeSucursal.map((p: any) => ({
             id_programacion: p.id,
@@ -84,7 +89,7 @@ const TablaTurnos = () => {
   useEffect(() => {
     cargarDatos();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, []); // Dependencias vacías para evitar bucle
 
   // --- GUARDAR CAMBIOS (CELDA) ---
   const handleChange = async (sucursalId: number, idProgramacion: number, empleadoId: number, tipo: string, valor: string, indexTurno: number) => {
@@ -171,7 +176,7 @@ const TablaTurnos = () => {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                empresa: 'PAN PA YA', 
+                empresa: 'PAN PA YA', // SIEMPRE PAN PA YA EN ESTA VISTA
                 sucursal: nuevaSucursalNombre.toUpperCase(),
                 idInterwap: 'PEND',
                 direccion: 'PEND'
@@ -189,14 +194,14 @@ const TablaTurnos = () => {
     <div className="space-y-6">
       <div className="flex justify-between items-center bg-white p-4 rounded-lg shadow-sm border border-gray-100">
         <div>
-          <h2 className="text-xl font-bold text-gray-800 tracking-tight">Planificación Semanal (BD)</h2>
+          <h2 className="text-xl font-bold text-gray-800 tracking-tight">Planificación Semanal (PAN PA YA)</h2>
           <p className="text-sm text-gray-500">Gestión de turnos fijos y apoyos</p>
         </div>
         <button 
           onClick={() => setModalSucursalAbierto(true)}
           className="flex items-center gap-2 bg-slate-800 text-white px-4 py-2 rounded-lg hover:bg-slate-700 transition-all shadow-md text-sm font-medium"
         >
-          <Building2 size={18} /> Nueva Sucursal
+          <Building2 size={18} /> Nueva Sede PPY
         </button>
       </div>
 
@@ -217,6 +222,14 @@ const TablaTurnos = () => {
             </tr>
           </thead>
           <tbody>
+            {sucursales.length === 0 && (
+                <tr>
+                    <td colSpan={9} className="p-8 text-center text-gray-400">
+                        No hay sedes de PAN PA YA registradas. <br/>
+                        Dale click a "Nueva Sede PPY" para empezar.
+                    </td>
+                </tr>
+            )}
             {sucursales.map((sucursal) => (
               <React.Fragment key={sucursal.id}>
                 <tr className="bg-gray-50 border-b border-gray-200">
