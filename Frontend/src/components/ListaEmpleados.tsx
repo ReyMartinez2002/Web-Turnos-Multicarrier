@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Search, Plus, Edit, Trash2, X, Check, User, Phone, Briefcase, Settings, Save } from 'lucide-react';
+import { Search, Plus, Edit, Trash2, X, Check, User, Phone, Briefcase, Settings, Save, MapPin } from 'lucide-react';
 
 interface Empleado {
   id: number;
@@ -9,26 +9,31 @@ interface Empleado {
   celular: string;
   idInterwap: string;
   estado: 'Activo' | 'Inactivo';
+  sedeFijaId: number | string; // Nuevo campo
+  nombreSedeFija?: string;     // Para mostrar en tabla
+  nombreEmpresaFija?: string;  // Para mostrar en tabla
 }
 
-interface CargoMaestro {
-  id: number;
-  nombre: string;
-}
+interface CargoMaestro { id: number; nombre: string; }
+interface SedeDisponible { id: number; empresa: string; sucursal: string; }
 
 const ListaEmpleados = () => {
   // Datos
   const [empleados, setEmpleados] = useState<Empleado[]>([]);
   const [cargosDisponibles, setCargosDisponibles] = useState<CargoMaestro[]>([]);
+  const [sedesDisponibles, setSedesDisponibles] = useState<SedeDisponible[]>([]); // Lista de sedes para el select
+  
   const [busqueda, setBusqueda] = useState('');
-  const [recargar, setRecargar] = useState(0); // Para forzar actualización
+  const [recargar, setRecargar] = useState(0);
 
   // Modales
   const [modalAbierto, setModalAbierto] = useState(false);
   const [modalConfigCargos, setModalConfigCargos] = useState(false);
 
   // Formularios
-  const empleadoVacio: Empleado = { id: 0, nombre: '', documento: '', cargo: '', celular: '', idInterwap: '', estado: 'Activo' };
+  const empleadoVacio: Empleado = { 
+      id: 0, nombre: '', documento: '', cargo: '', celular: '', idInterwap: '', estado: 'Activo', sedeFijaId: '' 
+  };
   const [formulario, setFormulario] = useState<Empleado>(empleadoVacio);
   const [isEditing, setIsEditing] = useState(false);
   const [nuevoCargoNombre, setNuevoCargoNombre] = useState('');
@@ -38,12 +43,15 @@ const ListaEmpleados = () => {
     let isMounted = true;
     const cargarDatos = async () => {
       try {
-        const [resEmp, resCargos] = await Promise.all([
+        const [resEmp, resCargos, resSedes] = await Promise.all([
           fetch('http://localhost:3001/empleados'),
-          fetch('http://localhost:3001/cargos-lista')
+          fetch('http://localhost:3001/cargos-lista'),
+          fetch('http://localhost:3001/clientes') // Traemos las sedes
         ]);
+
         const dataEmp = await resEmp.json();
         const dataCargos = await resCargos.json();
+        const dataSedes = await resSedes.json();
 
         if (isMounted) {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -54,9 +62,14 @@ const ListaEmpleados = () => {
                 celular: e.celular,
                 cargo: e.cargo,
                 idInterwap: e.id_interwap,
-                estado: e.estado || 'Activo'
+                estado: e.estado || 'Activo',
+                sedeFijaId: e.sede_fija_id || '', // Si es null, poner vacío
+                nombreSedeFija: e.nombre_sede_fija,
+                nombreEmpresaFija: e.nombre_empresa_fija
             })));
             setCargosDisponibles(dataCargos);
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            setSedesDisponibles(dataSedes.map((s: any) => ({ id: s.id, empresa: s.empresa, sucursal: s.sucursal })));
         }
       } catch (error) { console.error(error); }
     };
@@ -109,11 +122,9 @@ const ListaEmpleados = () => {
   // --- ELIMINAR EMPLEADO ---
   const eliminarEmpleado = async (id: number, nombre: string) => {
       if (!confirm(`¿Eliminar a "${nombre}"?\n\nSi tiene turnos históricos, no se borrará (debes inactivarlo).`)) return;
-
       try {
           const res = await fetch(`http://localhost:3001/empleados/${id}`, { method: 'DELETE' });
           const data = await res.json();
-
           if (res.ok) {
               alert("Empleado eliminado definitivamente");
               actualizarVista();
@@ -132,10 +143,7 @@ const ListaEmpleados = () => {
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ nombre: nuevoCargoNombre })
           });
-          if (res.ok) {
-              setNuevoCargoNombre('');
-              actualizarVista();
-          }
+          if (res.ok) { setNuevoCargoNombre(''); actualizarVista(); }
       } catch (error) { console.error(error); }
   };
 
@@ -175,22 +183,32 @@ const ListaEmpleados = () => {
         <table className="w-full text-sm text-left border-collapse">
           <thead className="bg-gray-50 text-gray-700 font-bold uppercase text-xs">
             <tr>
-              <th className="p-4 border-b">Nombre</th>
-              <th className="p-4 border-b">Documento (CC)</th>
-              <th className="p-4 border-b">Cargo</th>
-              <th className="p-4 border-b">Celular</th>
+              <th className="p-4 border-b">Nombre / Documento</th>
+              <th className="p-4 border-b">Cargo / Sede Fija</th>
+              <th className="p-4 border-b">Contacto</th>
               <th className="p-4 border-b">ID Interwap</th>
               <th className="p-4 border-b text-center">Estado</th>
               <th className="p-4 border-b text-center">Acciones</th>
             </tr>
           </thead>
           <tbody>
-            {empleadosFiltrados.length === 0 && (<tr><td colSpan={7} className="p-8 text-center text-gray-400">No hay empleados registrados.</td></tr>)}
+            {empleadosFiltrados.length === 0 && (<tr><td colSpan={6} className="p-8 text-center text-gray-400">No hay empleados registrados.</td></tr>)}
             {empleadosFiltrados.map((emp) => (
               <tr key={emp.id} className={`border-b last:border-0 transition-colors ${emp.estado === 'Inactivo' ? 'bg-gray-50 opacity-60' : 'hover:bg-blue-50'}`}>
-                <td className="p-4 font-bold text-gray-800 flex items-center gap-2"><User size={16} className="text-gray-400"/> {emp.nombre}</td>
-                <td className="p-4 text-gray-600 font-mono">{emp.documento}</td>
-                <td className="p-4 text-gray-600"><span className="bg-slate-100 text-slate-700 px-2 py-1 rounded text-xs font-bold uppercase">{emp.cargo}</span></td>
+                <td className="p-4">
+                    <div className="font-bold text-gray-800 flex items-center gap-2"><User size={16} className="text-gray-400"/> {emp.nombre}</div>
+                    <div className="text-xs text-gray-500 font-mono pl-6">{emp.documento}</div>
+                </td>
+                <td className="p-4">
+                    <div className="mb-1"><span className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded text-xs font-bold uppercase">{emp.cargo}</span></div>
+                    {emp.nombreSedeFija ? (
+                        <div className="flex items-center gap-1 text-xs text-indigo-600 font-semibold">
+                            <MapPin size={12}/> {emp.nombreEmpresaFija} - {emp.nombreSedeFija}
+                        </div>
+                    ) : (
+                        <div className="text-xs text-gray-400 italic">Sin sede fija (Rotativo)</div>
+                    )}
+                </td>
                 <td className="p-4 text-gray-600 flex items-center gap-1"><Phone size={12}/>{emp.celular || '-'}</td>
                 <td className="p-4 text-blue-600 font-mono font-bold">{emp.idInterwap}</td>
                 <td className="p-4 text-center">
@@ -215,9 +233,7 @@ const ListaEmpleados = () => {
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden animate-in zoom-in duration-200">
             <div className="bg-gray-800 p-4 flex justify-between items-center text-white">
-              <h3 className="font-bold text-lg flex items-center gap-2">
-                <User size={20}/> {isEditing ? 'Editar Empleado' : 'Nuevo Empleado'}
-              </h3>
+              <h3 className="font-bold text-lg flex items-center gap-2"><User size={20}/> {isEditing ? 'Editar Empleado' : 'Nuevo Empleado'}</h3>
               <button onClick={() => setModalAbierto(false)} className="hover:text-gray-300"><X size={24} /></button>
             </div>
 
@@ -248,17 +264,32 @@ const ListaEmpleados = () => {
                 </select>
               </div>
 
+              {/* SELECTOR DE SEDE FIJA (NUEVO) */}
+              <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Sede Fija (Opcional)</label>
+                <select 
+                    className="w-full border border-gray-300 p-2 rounded focus:ring-2 focus:ring-indigo-500 outline-none text-indigo-700 font-medium" 
+                    value={formulario.sedeFijaId} 
+                    onChange={(e) => setFormulario({...formulario, sedeFijaId: e.target.value})}
+                >
+                  <option value="">-- ROTATIVO / SIN FIJO --</option>
+                  {sedesDisponibles.map(s => (
+                      <option key={s.id} value={s.id}>{s.empresa} - {s.sucursal}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-1">ID Interwap</label>
+                <input type="text" className="w-full border border-gray-300 p-2 rounded focus:ring-2 focus:ring-blue-500 outline-none font-bold text-blue-600" value={formulario.idInterwap} onChange={(e) => setFormulario({...formulario, idInterwap: e.target.value})} />
+              </div>
+
               <div>
                 <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Estado</label>
                 <select className="w-full border border-gray-300 p-2 rounded focus:ring-2 focus:ring-blue-500 outline-none" value={formulario.estado} onChange={(e) => setFormulario({...formulario, estado: e.target.value as 'Activo' | 'Inactivo'})}>
                   <option value="Activo">Activo (Disponible)</option>
                   <option value="Inactivo">Inactivo (No programable)</option>
                 </select>
-              </div>
-
-              <div className="col-span-2">
-                <label className="block text-xs font-bold text-gray-500 uppercase mb-1">ID Interwap</label>
-                <input type="text" className="w-full border border-gray-300 p-2 rounded focus:ring-2 focus:ring-blue-500 outline-none font-bold text-blue-600" value={formulario.idInterwap} onChange={(e) => setFormulario({...formulario, idInterwap: e.target.value})} />
               </div>
             </div>
 
