@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { UserPlus, Building2, Trash2, UserCheck } from 'lucide-react';
+import { UserPlus, Building2, Trash2, UserCheck, RefreshCw, Edit } from 'lucide-react'; // Agregamos Edit
 
 interface EmpleadoGrid {
   id_programacion: number;
@@ -32,33 +32,36 @@ const TablaTurnos = () => {
   ];
 
   const [sucursales, setSucursales] = useState<SucursalGrid[]>([]);
+  const [listaEmpleadosBD, setListaEmpleadosBD] = useState<EmpleadoBD[]>([]);
+  
+  // Modales
   const [modalSucursalAbierto, setModalSucursalAbierto] = useState(false);
   const [modalEmpleadoAbierto, setModalEmpleadoAbierto] = useState(false);
-  const [listaEmpleadosBD, setListaEmpleadosBD] = useState<EmpleadoBD[]>([]);
   const [nuevaSucursalNombre, setNuevaSucursalNombre] = useState('');
+  
+  // Estado para Agregar/Editar
+  const [modoEdicion, setModoEdicion] = useState(false); // false = Agregar, true = Editar
+  const [idProgramacionAEditar, setIdProgramacionAEditar] = useState<number | null>(null);
   const [sucursalSeleccionadaId, setSucursalSeleccionadaId] = useState<number | null>(null);
   const [tipoSeleccionado, setTipoSeleccionado] = useState<'Fijo' | 'Apoyo'>('Fijo');
   const [empleadoSeleccionadoId, setEmpleadoSeleccionadoId] = useState<string>('');
+  
+  const [rotando, setRotando] = useState(false);
 
   // --- CARGAR DATOS ---
   const cargarDatos = useCallback(async () => {
     try {
-      // 1. Obtener todas las sucursales
       const resSuc = await fetch('http://localhost:3001/clientes');
       const dataSuc = await resSuc.json();
       
-      // 2. Obtener la programación guardada
       const resProg = await fetch('http://localhost:3001/programacion-semanal');
       const dataProg = await resProg.json();
 
-      // --- FILTRO CLAVE: SOLO PAN PA YA ---
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const soloPanPaYa = dataSuc.filter((s: any) => s.empresa === 'PAN PA YA');
 
-      // 3. Organizar los datos
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const estructura: SucursalGrid[] = soloPanPaYa.map((s: any) => {
-        // Buscar empleados programados en esta sucursal
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const empleadosDeSucursal = dataProg.filter((p: any) => p.sucursal_id === s.id);
 
@@ -89,11 +92,81 @@ const TablaTurnos = () => {
   useEffect(() => {
     cargarDatos();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Dependencias vacías para evitar bucle
+  }, []);
 
-  // --- GUARDAR CAMBIOS (CELDA) ---
+  // --- ABRIR MODAL PARA AGREGAR ---
+  const abrirModalAgregar = (sucursalId: number, tipo: 'Fijo' | 'Apoyo') => {
+    setModoEdicion(false);
+    setSucursalSeleccionadaId(sucursalId);
+    setTipoSeleccionado(tipo);
+    setEmpleadoSeleccionadoId('');
+    setModalEmpleadoAbierto(true);
+  };
+
+  // --- ABRIR MODAL PARA EDITAR ---
+  const abrirModalEditar = (idProgramacion: number, empleadoActualId: number, tipo: 'Fijo' | 'Apoyo') => {
+    setModoEdicion(true);
+    setIdProgramacionAEditar(idProgramacion);
+    setTipoSeleccionado(tipo);
+    setEmpleadoSeleccionadoId(empleadoActualId.toString());
+    setModalEmpleadoAbierto(true);
+  };
+
+  // --- GUARDAR (YA SEA AGREGAR O EDITAR) ---
+  const guardarEmpleado = async () => {
+    if (!empleadoSeleccionadoId) return;
+
+    try {
+        if (modoEdicion && idProgramacionAEditar) {
+            // Lógica de EDICIÓN
+            const response = await fetch('http://localhost:3001/programacion-semanal/editar-empleado', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    idProgramacion: idProgramacionAEditar,
+                    nuevoEmpleadoId: parseInt(empleadoSeleccionadoId)
+                })
+            });
+            if (response.ok) {
+                setModalEmpleadoAbierto(false);
+                cargarDatos();
+            }
+        } else {
+            // Lógica de AGREGAR (La que ya tenías)
+            if (!sucursalSeleccionadaId) return;
+            const response = await fetch('http://localhost:3001/programacion-semanal/agregar', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    sucursalId: sucursalSeleccionadaId,
+                    empleadoId: parseInt(empleadoSeleccionadoId),
+                    tipo: tipoSeleccionado
+                })
+            });
+            if (response.ok) {
+                setModalEmpleadoAbierto(false);
+                cargarDatos();
+            }
+        }
+    } catch (error) {
+        console.error(error);
+        alert("Error al guardar");
+    }
+  };
+
+  // --- RESTO DE FUNCIONES (Igual que antes) ---
+  const rotarTurnos = async () => {
+    if (!window.confirm("¿Seguro que deseas rotar los turnos de los FIJOS en cada sede?")) return;
+    setRotando(true);
+    try {
+        const response = await fetch('http://localhost:3001/rotar-turnos', { method: 'POST' });
+        if (response.ok) {
+            setTimeout(() => { cargarDatos(); setRotando(false); alert("Turnos rotados correctamente"); }, 500);
+        }
+    } catch (error) { console.error(error); setRotando(false); }
+  };
+
   const handleChange = async (sucursalId: number, idProgramacion: number, empleadoId: number, tipo: string, valor: string, indexTurno: number) => {
-    // 1. Actualizar visualmente
     const nuevasSucursales = sucursales.map(suc => {
       if (suc.id !== sucursalId) return suc;
       const nuevosEmpleados = suc.empleados.map(emp => {
@@ -106,67 +179,22 @@ const TablaTurnos = () => {
     });
     setSucursales(nuevasSucursales);
 
-    // 2. Guardar en BD
     try {
       const diaColumna = diasSemana[indexTurno].key;
       await fetch('http://localhost:3001/programacion-semanal/actualizar', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sucursalId,
-          empleadoId,
-          tipo,
-          dia: diaColumna,
-          valor
-        })
+        body: JSON.stringify({ sucursalId, empleadoId, tipo, dia: diaColumna, valor })
       });
-    } catch (error) {
-      console.error("Error guardando turno", error);
-    }
-  };
-
-  // --- AGREGAR EMPLEADO A LA TABLA ---
-  const abrirModalEmpleado = (sucursalId: number, tipo: 'Fijo' | 'Apoyo') => {
-    setSucursalSeleccionadaId(sucursalId);
-    setTipoSeleccionado(tipo);
-    setEmpleadoSeleccionadoId('');
-    setModalEmpleadoAbierto(true);
-  };
-
-  const confirmarAgregarEmpleado = async () => {
-    if (!sucursalSeleccionadaId || !empleadoSeleccionadoId) return;
-
-    try {
-      const response = await fetch('http://localhost:3001/programacion-semanal/agregar', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sucursalId: sucursalSeleccionadaId,
-          empleadoId: parseInt(empleadoSeleccionadoId),
-          tipo: tipoSeleccionado
-        })
-      });
-
-      if (response.ok) {
-        setModalEmpleadoAbierto(false);
-        cargarDatos();
-      }
-    } catch (error) {
-      console.error(error);
-    }
+    } catch (error) { console.error("Error", error); }
   };
 
   const eliminarFila = async (idProgramacion: number) => {
     if(!window.confirm("¿Quitar a este empleado de la programación?")) return;
-
     try {
-      await fetch(`http://localhost:3001/programacion-semanal/${idProgramacion}`, {
-        method: 'DELETE'
-      });
+      await fetch(`http://localhost:3001/programacion-semanal/${idProgramacion}`, { method: 'DELETE' });
       cargarDatos();
-    } catch (error) {
-      console.error(error);
-    }
+    } catch (error) { console.error(error); }
   };
 
   const guardarNuevaSucursal = async () => {
@@ -175,19 +203,10 @@ const TablaTurnos = () => {
         await fetch('http://localhost:3001/clientes', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                empresa: 'PAN PA YA', // SIEMPRE PAN PA YA EN ESTA VISTA
-                sucursal: nuevaSucursalNombre.toUpperCase(),
-                idInterwap: 'PEND',
-                direccion: 'PEND'
-            })
+            body: JSON.stringify({ empresa: 'PAN PA YA', sucursal: nuevaSucursalNombre.toUpperCase(), idInterwap: 'PEND', direccion: 'PEND' })
         });
-        setModalSucursalAbierto(false);
-        setNuevaSucursalNombre('');
-        cargarDatos();
-    } catch (error) {
-        console.error(error);
-    }
+        setModalSucursalAbierto(false); setNuevaSucursalNombre(''); cargarDatos();
+    } catch (error) { console.error(error); }
   };
 
   return (
@@ -197,21 +216,23 @@ const TablaTurnos = () => {
           <h2 className="text-xl font-bold text-gray-800 tracking-tight">Planificación Semanal (PAN PA YA)</h2>
           <p className="text-sm text-gray-500">Gestión de turnos fijos y apoyos</p>
         </div>
-        <button 
-          onClick={() => setModalSucursalAbierto(true)}
-          className="flex items-center gap-2 bg-slate-800 text-white px-4 py-2 rounded-lg hover:bg-slate-700 transition-all shadow-md text-sm font-medium"
-        >
-          <Building2 size={18} /> Nueva Sede PPY
-        </button>
+        
+        <div className="flex gap-3">
+            <button onClick={rotarTurnos} disabled={rotando} className={`flex items-center gap-2 px-4 py-2 rounded-lg text-white font-medium transition-all shadow-md ${rotando ? 'bg-orange-400 cursor-wait' : 'bg-orange-500 hover:bg-orange-600'}`}>
+                <RefreshCw size={18} className={rotando ? 'animate-spin' : ''} />
+                {rotando ? 'Rotando...' : 'Rotar Turnos'}
+            </button>
+            <button onClick={() => setModalSucursalAbierto(true)} className="flex items-center gap-2 bg-slate-800 text-white px-4 py-2 rounded-lg hover:bg-slate-700 transition-all shadow-md text-sm font-medium">
+                <Building2 size={18} /> Nueva Sede PPY
+            </button>
+        </div>
       </div>
 
       <div className="overflow-x-auto bg-white rounded-xl shadow-lg border border-gray-200">
         <table className="w-full text-sm text-left border-collapse">
           <thead className="bg-slate-900 text-white">
             <tr>
-              <th className="p-3 border-r border-slate-700 min-w-[250px] sticky left-0 bg-slate-900 z-20">
-                SUCURSAL / EMPLEADO
-              </th>
+              <th className="p-3 border-r border-slate-700 min-w-[250px] sticky left-0 bg-slate-900 z-20">SUCURSAL / EMPLEADO</th>
               {diasSemana.map((dia, index) => (
                 <th key={index} className="p-3 border-r border-slate-700 text-center min-w-[120px]">
                   <div className="text-xs opacity-75 uppercase tracking-wider">{dia.dia}</div>
@@ -223,56 +244,33 @@ const TablaTurnos = () => {
           </thead>
           <tbody>
             {sucursales.length === 0 && (
-                <tr>
-                    <td colSpan={9} className="p-8 text-center text-gray-400">
-                        No hay sedes de PAN PA YA registradas. <br/>
-                        Dale click a "Nueva Sede PPY" para empezar.
-                    </td>
-                </tr>
+                <tr><td colSpan={9} className="p-8 text-center text-gray-400">No hay sedes de PAN PA YA registradas.</td></tr>
             )}
             {sucursales.map((sucursal) => (
               <React.Fragment key={sucursal.id}>
                 <tr className="bg-gray-50 border-b border-gray-200">
                   <td className="p-3 bg-indigo-50/50 border-r border-indigo-100 font-bold text-indigo-900 flex justify-between items-center sticky left-0 z-10" colSpan={1}>
-                    <span className="flex items-center gap-2 text-lg">
-                      <Building2 size={20} className="text-indigo-600"/>
-                      {sucursal.nombre}
-                    </span>
+                    <span className="flex items-center gap-2 text-lg"><Building2 size={20} className="text-indigo-600"/>{sucursal.nombre}</span>
                     <div className="flex gap-2">
-                      <button 
-                        onClick={() => abrirModalEmpleado(sucursal.id, 'Fijo')}
-                        className="text-xs flex items-center gap-1 bg-white border border-indigo-200 text-indigo-700 px-3 py-1 rounded-md hover:bg-indigo-600 hover:text-white transition-all shadow-sm font-medium"
-                      >
-                        <UserCheck size={14} /> + Fijo
-                      </button>
-                      <button 
-                        onClick={() => abrirModalEmpleado(sucursal.id, 'Apoyo')}
-                        className="text-xs flex items-center gap-1 bg-white border border-orange-200 text-orange-600 px-3 py-1 rounded-md hover:bg-orange-500 hover:text-white transition-all shadow-sm font-medium"
-                      >
-                        <UserPlus size={14} /> + Apoyo
-                      </button>
+                      <button onClick={() => abrirModalAgregar(sucursal.id, 'Fijo')} className="text-xs flex items-center gap-1 bg-white border border-indigo-200 text-indigo-700 px-3 py-1 rounded-md hover:bg-indigo-600 hover:text-white transition-all shadow-sm font-medium"><UserCheck size={14} /> + Fijo</button>
+                      <button onClick={() => abrirModalAgregar(sucursal.id, 'Apoyo')} className="text-xs flex items-center gap-1 bg-white border border-orange-200 text-orange-600 px-3 py-1 rounded-md hover:bg-orange-500 hover:text-white transition-all shadow-sm font-medium"><UserPlus size={14} /> + Apoyo</button>
                     </div>
                   </td>
                   <td colSpan={8} className="bg-gray-50/30"></td>
                 </tr>
                 
-                {sucursal.empleados.length === 0 && (
-                  <tr>
-                    <td colSpan={9} className="p-8 text-center text-gray-400 italic bg-white border-b">
-                      No hay programación para esta sede
-                    </td>
-                  </tr>
-                )}
-
                 {sucursal.empleados.map((empleado) => (
                   <tr key={empleado.id_programacion} className="group hover:bg-gray-50 border-b border-gray-100 last:border-0 transition-colors">
                     <td className="p-2 border-r border-gray-100 sticky left-0 bg-white group-hover:bg-gray-50 z-10 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)]">
-                      <div className="flex flex-col px-2">
-                        <span className="font-bold text-gray-700 uppercase text-sm">{empleado.nombre}</span>
-                        <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded w-fit mt-1
-                          ${empleado.tipo === 'Fijo' ? 'bg-slate-100 text-slate-600' : 'bg-orange-100 text-orange-600'}`}>
-                          {empleado.tipo}
-                        </span>
+                      <div className="flex justify-between items-center px-2">
+                          <div className="flex flex-col">
+                            <span className="font-bold text-gray-700 uppercase text-sm">{empleado.nombre}</span>
+                            <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded w-fit mt-1 ${empleado.tipo === 'Fijo' ? 'bg-slate-100 text-slate-600' : 'bg-orange-100 text-orange-600'}`}>{empleado.tipo}</span>
+                          </div>
+                          {/* BOTÓN EDITAR (LÁPIZ) */}
+                          <button onClick={() => abrirModalEditar(empleado.id_programacion, empleado.empleado_id, empleado.tipo)} className="text-gray-400 hover:text-blue-600 p-1 rounded transition-colors">
+                              <Edit size={16} />
+                          </button>
                       </div>
                     </td>
 
@@ -282,21 +280,13 @@ const TablaTurnos = () => {
                           value={turno}
                           onChange={(e) => handleChange(sucursal.id, empleado.id_programacion, empleado.empleado_id, empleado.tipo, e.target.value, tIndex)}
                           className={`w-full h-full text-center text-xs font-semibold focus:outline-none focus:bg-indigo-50 transition-colors resize-none p-2 flex items-center justify-center
-                            ${(turno === 'DESCANSO' || turno === 'DESC') ? 'text-red-500 bg-red-50/50' : 
-                              turno.includes('AM') ? 'text-blue-600' : 
-                              turno.includes('PM') ? 'text-purple-600' : 'text-gray-700'}
-                          `}
+                            ${(turno === 'DESCANSO' || turno === 'DESC') ? 'text-red-500 bg-red-50/50' : turno.includes('AM') ? 'text-blue-600' : turno.includes('PM') ? 'text-purple-600' : 'text-gray-700'}`}
                         />
                       </td>
                     ))}
 
                     <td className="p-0 text-center">
-                      <button 
-                        onClick={() => eliminarFila(empleado.id_programacion)}
-                        className="text-gray-300 hover:text-red-500 p-2 rounded-full hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100"
-                      >
-                        <Trash2 size={16} />
-                      </button>
+                      <button onClick={() => eliminarFila(empleado.id_programacion)} className="text-gray-300 hover:text-red-500 p-2 rounded-full hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100"><Trash2 size={16} /></button>
                     </td>
                   </tr>
                 ))}
@@ -310,14 +300,7 @@ const TablaTurnos = () => {
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
           <div className="bg-white rounded-xl shadow-2xl w-96 overflow-hidden p-6 space-y-4">
             <h3 className="font-bold text-lg">Nueva Sede (Pan Pa Ya)</h3>
-            <input 
-              autoFocus
-              type="text" 
-              value={nuevaSucursalNombre}
-              onChange={(e) => setNuevaSucursalNombre(e.target.value)}
-              placeholder="Ej: CALLE 100"
-              className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
-            />
+            <input autoFocus type="text" value={nuevaSucursalNombre} onChange={(e) => setNuevaSucursalNombre(e.target.value)} placeholder="Ej: CALLE 100" className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
             <div className="flex gap-3 pt-2">
                <button onClick={() => setModalSucursalAbierto(false)} className="flex-1 px-4 py-2 border rounded-lg">Cancelar</button>
                <button onClick={guardarNuevaSucursal} className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-lg">Guardar</button>
@@ -329,30 +312,23 @@ const TablaTurnos = () => {
       {modalEmpleadoAbierto && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
            <div className="bg-white rounded-xl shadow-2xl w-96 overflow-hidden p-6 space-y-4">
-              <h3 className="font-bold text-lg text-indigo-700">Agregar {tipoSeleccionado}</h3>
-              
+              <h3 className="font-bold text-lg text-indigo-700">
+                  {modoEdicion ? `Cambiar Empleado (${tipoSeleccionado})` : `Agregar ${tipoSeleccionado}`}
+              </h3>
               <div>
                   <label className="block text-xs font-bold mb-1 text-gray-500">Seleccionar Empleado</label>
-                  <select 
-                    className="w-full border p-2 rounded"
-                    value={empleadoSeleccionadoId}
-                    onChange={(e) => setEmpleadoSeleccionadoId(e.target.value)}
-                  >
+                  <select className="w-full border p-2 rounded" value={empleadoSeleccionadoId} onChange={(e) => setEmpleadoSeleccionadoId(e.target.value)}>
                       <option value="">-- Buscar --</option>
-                      {listaEmpleadosBD.map(emp => (
-                          <option key={emp.id} value={emp.id}>{emp.nombre_completo}</option>
-                      ))}
+                      {listaEmpleadosBD.map(emp => (<option key={emp.id} value={emp.id}>{emp.nombre_completo}</option>))}
                   </select>
               </div>
-
               <div className="flex gap-3 pt-2">
                  <button onClick={() => setModalEmpleadoAbierto(false)} className="flex-1 px-4 py-2 border rounded-lg">Cancelar</button>
-                 <button onClick={confirmarAgregarEmpleado} className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-lg">Agregar</button>
+                 <button onClick={guardarEmpleado} className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-lg">{modoEdicion ? 'Actualizar' : 'Agregar'}</button>
               </div>
            </div>
         </div>
       )}
-
     </div>
   );
 };
