@@ -20,7 +20,7 @@ const Sidebar: React.FC<SidebarProps> = ({ setVista, vistaActual }) => {
         <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center text-white font-bold">M</div>
         <div>
           <h1 className="text-xl font-bold text-gray-800 tracking-tight">Multicarrier</h1>
-          <p className="text-[10px] text-gray-500 font-medium">SISTEMA DE GESTIÓN</p>
+          <p className="text-[10px] text-gray-500 font-medium">SISTEMA DE TURNOS</p>
         </div>
       </div>
 
