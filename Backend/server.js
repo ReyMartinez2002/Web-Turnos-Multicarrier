@@ -114,6 +114,63 @@ const calcularHorasTotales = (horaIni, horaFin) => {
 };
 
 // =========================
+// AUTO-MARCAR PPY (cuando se crea turno externo)
+// =========================
+function getFechaInicioSemanaSabado(fechaISO) {
+  const d = new Date(fechaISO + 'T00:00:00');
+  const day = d.getDay(); // 0 dom ... 6 sab
+  const offset = day === 6 ? 0 : day + 1; // sab=0, dom=1, lun=2...
+  const inicio = new Date(d);
+  inicio.setDate(d.getDate() - offset);
+  return inicio.toISOString().split('T')[0];
+}
+
+function getColDiaDesdeFecha(fechaISO) {
+  const d = new Date(fechaISO + 'T00:00:00');
+  const day = d.getDay();
+  const map = {
+    6: 'sabado',
+    0: 'domingo',
+    1: 'lunes',
+    2: 'martes',
+    3: 'miercoles',
+    4: 'jueves',
+    5: 'viernes',
+  };
+  return map[day];
+}
+
+function autoMarcarPPYPorExterno({ empleadoId, fechaISO, textoPPY = '5PM' }, cb) {
+  if (!empleadoId || !fechaISO) return cb?.(null);
+
+  const fechaSemana = getFechaInicioSemanaSabado(fechaISO);
+  const colDia = getColDiaDesdeFecha(fechaISO);
+  if (!colDia) return cb?.(null);
+
+  const findSql = `
+    SELECT id, ${colDia} as valorActual
+    FROM programacion_semanal
+    WHERE empleado_id = ? AND fecha_inicio_semana = ?
+    LIMIT 1
+  `;
+
+  db.query(findSql, [empleadoId, fechaSemana], (err, rows) => {
+    if (err) return cb?.(err);
+    if (!rows || rows.length === 0) return cb?.(null);
+
+    const fila = rows[0];
+    const actual = (fila.valorActual || '').toString().trim().toUpperCase();
+
+    // Solo pisa si está vacío o "PM"
+    const sePuedePisar = actual === '' || actual === 'PM';
+    if (!sePuedePisar) return cb?.(null);
+
+    const updateSql = `UPDATE programacion_semanal SET ${colDia} = ? WHERE id = ?`;
+    db.query(updateSql, [textoPPY, fila.id], (err2) => cb?.(err2 || null));
+  });
+}
+
+// =========================
 // RUTAS: EMPLEADOS
 // =========================
 app.get('/empleados', (req, res) => {
@@ -322,6 +379,7 @@ app.get('/turnos-externos', (req, res) => {
   db.query(sql, (err, result) => (err ? res.status(500).json(err) : res.json(result)));
 });
 
+// INSERT (con auto-marca PPY)
 const insertarTurnoExterno = (req, res) => {
   const data = req.body;
 
@@ -359,10 +417,19 @@ const insertarTurnoExterno = (req, res) => {
 
   db.query(sql, valores, (err, result) => {
     if (err) return res.status(500).json(err);
+
+    if (data.empleadoId) {
+      return autoMarcarPPYPorExterno({ empleadoId: data.empleadoId, fechaISO: data.fecha, textoPPY: '5PM' }, (errAuto) => {
+        if (errAuto) console.error('Auto-marca PPY falló:', errAuto);
+        return res.json({ message: 'Turno creado', id: result.insertId });
+      });
+    }
+
     return res.json({ message: 'Turno creado', id: result.insertId });
   });
 };
 
+// POST (con cruces)
 app.post('/turnos-externos', (req, res) => {
   const data = req.body;
 
@@ -371,6 +438,7 @@ app.post('/turnos-externos', (req, res) => {
   const inicioNuevo = horaADecimal(data.horaIni);
   const finNuevo = horaADecimal(data.horaFin);
 
+  // Cruce con EXTERNOS
   const sqlExt = `
     SELECT t.*, c.empresa
     FROM turnos_externos t
@@ -383,12 +451,11 @@ app.post('/turnos-externos', (req, res) => {
 
     for (const t of turnosExistentes) {
       if (verificarCruce(inicioNuevo, finNuevo, horaADecimal(t.hora_inicio), horaADecimal(t.hora_fin))) {
-        return res
-          .status(409)
-          .json({ message: `¡Cruce! Ya tiene turno en ${t.empresa} (${t.hora_inicio} - ${t.hora_fin})` });
+        return res.status(409).json({ message: `¡Cruce! Ya tiene turno en ${t.empresa} (${t.hora_inicio} - ${t.hora_fin})` });
       }
     }
 
+    // Cruce con PPY
     const diasCols = ['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado'];
     const fechaObj = new Date(data.fecha + 'T00:00:00');
     const nombreDia = diasCols[fechaObj.getDay()];
@@ -405,22 +472,22 @@ app.post('/turnos-externos', (req, res) => {
       if (err2) return res.status(500).json(err2);
 
       for (const p of turnosPPY) {
-  const rangoPPY = obtenerRangoHorario(p[nombreDia]);
-  if (rangoPPY && verificarCruce(inicioNuevo, finNuevo, rangoPPY.inicio, rangoPPY.fin)) {
-    return res.status(409).json({
-      code: 'CRUCE_PPY',
-      message: `¡Cruce! Tiene turno en PPY.`,
-      detalle: {
-        sucursal: p.sucursal,
-        dia: nombreDia,
-        turnoTexto: p[nombreDia],
-        rango: `${rangoPPY.inicio}:00 - ${rangoPPY.fin}:00`,
-        nuevoTurno: `${data.horaIni} - ${data.horaFin}`,
-        fecha: data.fecha,
-      },
-    });
-  }
-}
+        const rangoPPY = obtenerRangoHorario(p[nombreDia]);
+        if (rangoPPY && verificarCruce(inicioNuevo, finNuevo, rangoPPY.inicio, rangoPPY.fin)) {
+          return res.status(409).json({
+            code: 'CRUCE_PPY',
+            message: '¡Cruce! Tiene turno en PPY.',
+            detalle: {
+              sucursal: p.sucursal,
+              dia: nombreDia,
+              turnoTexto: p[nombreDia],
+              rango: `${rangoPPY.inicio}:00 - ${rangoPPY.fin}:00`,
+              nuevoTurno: `${data.horaIni} - ${data.horaFin}`,
+              fecha: data.fecha,
+            },
+          });
+        }
+      }
 
       return insertarTurnoExterno(req, res);
     });
@@ -504,6 +571,123 @@ app.patch('/turnos-externos/:id/liberar', (req, res) => {
     if (err) return res.status(500).json(err);
     if (result.affectedRows === 0) return res.status(404).json({ message: 'No existe el turno' });
     return res.json({ message: 'Turno liberado (vacante)' });
+  });
+});
+
+// ============================================
+// IMPORTACIÓN MASIVA TURNOS EXTERNOS
+// POST /turnos-externos/importar
+// body: { turnos: [{ documento|cc|empleadoId, sucursalId, fecha, horaIni, horaFin }] }
+// ============================================
+app.post('/turnos-externos/importar', (req, res) => {
+  const { turnos } = req.body;
+
+  if (!Array.isArray(turnos) || turnos.length === 0) {
+    return res.status(400).json({ message: 'No se recibieron turnos para importar.' });
+  }
+
+  const normalizados = turnos
+    .map((t) => {
+      const documento = String(t.documento ?? t.cc ?? '').trim();
+      const empleadoId = t.empleadoId ? Number(t.empleadoId) : null;
+      const sucursalId = Number(t.sucursalId);
+      const fecha = String(t.fecha ?? '').split('T')[0];
+      const horaIni = String(t.horaIni ?? '');
+      const horaFin = String(t.horaFin ?? '');
+
+      if (!sucursalId || !fecha || !horaIni || !horaFin) return null;
+      if (!empleadoId && !documento) return null;
+
+      return { documento, empleadoId, sucursalId, fecha, horaIni, horaFin };
+    })
+    .filter(Boolean);
+
+  if (normalizados.length === 0) {
+    return res.status(400).json({
+      message: 'No hay filas válidas. Requiere sucursalId, fecha, horaIni, horaFin y (empleadoId o documento/cc).',
+    });
+  }
+
+  const docs = [...new Set(normalizados.filter((x) => !x.empleadoId && x.documento).map((x) => x.documento))];
+  const empleadosPorDoc = new Map();
+
+  const resolverEmpleados = (cb) => {
+    if (docs.length === 0) return cb(null);
+    const sql = `SELECT id, documento FROM empleados WHERE documento IN (?)`;
+    db.query(sql, [docs], (err, rows) => {
+      if (err) return cb(err);
+      rows.forEach((r) => empleadosPorDoc.set(String(r.documento), r.id));
+      cb(null);
+    });
+  };
+
+  resolverEmpleados((err0) => {
+    if (err0) return res.status(500).json(err0);
+
+    const filas = normalizados.map((t) => {
+      const empleadoFinal = t.empleadoId || empleadosPorDoc.get(t.documento) || null;
+
+      const extras = calcularExtrasFecha(t.fecha);
+      const horasTotales = calcularHorasTotales(t.horaIni, t.horaFin);
+
+      return [
+        empleadoFinal,
+        t.sucursalId,
+        t.fecha,
+        extras?.semana || null,
+        extras?.dia_semana || null,
+        extras?.mes || null,
+        extras?.anio || null,
+        t.horaIni,
+        t.horaFin,
+        horasTotales,
+        'No Cargar',
+        null,
+        null,
+        null,
+        'OK',
+        'Pendiente',
+      ];
+    });
+
+    const sqlInsert = `
+      INSERT INTO turnos_externos
+        (empleado_id, sucursal_id, fecha, semana, dia_semana, mes, anio,
+         hora_inicio, hora_fin, horas_totales,
+         id_turno, asignacion, tipo_turno, franja_horaria, estado_turno, estado_ejecucion)
+      VALUES ?
+    `;
+
+    db.query(sqlInsert, [filas], (err1, result) => {
+      if (err1) return res.status(500).json(err1);
+
+      const listaMarcar = filas.map((f) => ({ empleadoId: f[0], fecha: f[2] })).filter((x) => x.empleadoId);
+
+      let idx = 0;
+      let ppyMarcados = 0;
+
+      const marcar = () => {
+        if (idx >= listaMarcar.length) {
+          return res.json({
+            message: 'Importación completa',
+            resumen: {
+              recibidos: turnos.length,
+              validos: normalizados.length,
+              insertados: result.affectedRows || 0,
+              ppyMarcados,
+            },
+          });
+        }
+
+        const it = listaMarcar[idx++];
+        autoMarcarPPYPorExterno({ empleadoId: it.empleadoId, fechaISO: it.fecha, textoPPY: '5PM' }, (e) => {
+          if (!e) ppyMarcados++;
+          marcar();
+        });
+      };
+
+      marcar();
+    });
   });
 });
 
@@ -809,10 +993,9 @@ app.delete('/cargos-lista/:id', (req, res) => {
     return res.json({ message: 'Cargo eliminado' });
   });
 });
+
 // =========================
 // IMPORTACIÓN MASIVA DE EMPLEADOS (JSON)
-// POST /empleados/importar
-// body: { empleados: [{ nombre, documento, celular, cargo, idInterwap, estado, sedeFijaId }] }
 // =========================
 app.post('/empleados/importar', (req, res) => {
   const { empleados } = req.body;
@@ -821,7 +1004,6 @@ app.post('/empleados/importar', (req, res) => {
     return res.status(400).json({ message: 'No se recibieron empleados para importar.' });
   }
 
-  // Normaliza y arma filas
   const filas = empleados
     .map((e) => {
       const nombre = (e.nombre || '').toString().trim().toUpperCase();
@@ -839,11 +1021,11 @@ app.post('/empleados/importar', (req, res) => {
     .filter(Boolean);
 
   if (filas.length === 0) {
-    return res.status(400).json({ message: 'Todos los registros venían vacíos o inválidos (requiere nombre, documento, cargo).' });
+    return res
+      .status(400)
+      .json({ message: 'Todos los registros venían vacíos o inválidos (requiere nombre, documento, cargo).' });
   }
 
-  // Inserta en lote. Si documento está UNIQUE, los duplicados fallarán.
-  // Para "saltarlos" usamos INSERT IGNORE (solo si tu documento es UNIQUE).
   const sql = `
     INSERT IGNORE INTO empleados
       (nombre_completo, documento, celular, cargo, id_interwap, estado, sede_fija_id)
@@ -853,7 +1035,6 @@ app.post('/empleados/importar', (req, res) => {
   db.query(sql, [filas], (err, result) => {
     if (err) return res.status(500).json(err);
 
-    // result.affectedRows = insertados (en INSERT IGNORE no cuenta duplicados)
     const insertados = result.affectedRows || 0;
     const recibidosValidos = filas.length;
     const duplicados = Math.max(recibidosValidos - insertados, 0);
@@ -869,9 +1050,9 @@ app.post('/empleados/importar', (req, res) => {
     });
   });
 });
-//IMPORTACIÓN MASIVA DE CLIENTES / SUCURSALES (JSON)
-// POST /clientes/importar
-// body: { clientes: [{ empresa, sucursal, idCliente, idInterwap, direccion }] }
+
+// =========================
+// IMPORTACIÓN MASIVA DE CLIENTES / SUCURSALES (JSON)
 // =========================
 app.post('/clientes/importar', (req, res) => {
   const { clientes } = req.body;
@@ -880,7 +1061,6 @@ app.post('/clientes/importar', (req, res) => {
     return res.status(400).json({ message: 'No se recibieron clientes para importar.' });
   }
 
-  // Normaliza y arma filas
   const filas = clientes
     .map((c) => {
       const empresa = (c.empresa || '').toString().trim().toUpperCase();
@@ -899,9 +1079,6 @@ app.post('/clientes/importar', (req, res) => {
     return res.status(400).json({ message: 'Todos los registros venían vacíos o inválidos (requiere empresa y sucursal).' });
   }
 
-  // IMPORTANTE:
-  // - Esto usa INSERT IGNORE para que si tienes un UNIQUE (por ejemplo empresa+sucursal o id_interwap),
-  //   los duplicados se ignoren sin romper la importación.
   const sql = `
     INSERT IGNORE INTO clientes_sucursales
       (empresa, sucursal, id_cliente_interno, id_interwap, direccion)
@@ -929,10 +1106,9 @@ app.post('/clientes/importar', (req, res) => {
 
 // ============================================
 // PROGRAMACIÓN SEMANAL + OVERLAY DE EXTERNOS
-// GET /programacion-semanal-con-externos?fecha=YYYY-MM-DD
 // ============================================
 app.get('/programacion-semanal-con-externos', (req, res) => {
-  const { fecha } = req.query; // fecha inicio semana (YYYY-MM-DD)
+  const { fecha } = req.query;
   if (!fecha) return res.status(400).json({ error: 'Se requiere ?fecha=YYYY-MM-DD' });
 
   const sqlPPY = `
@@ -975,6 +1151,312 @@ app.get('/programacion-semanal-con-externos', (req, res) => {
     });
   });
 });
+// CREAR TURNOS EXTERNOS MASIVO (sin Excel)
+// POST /turnos-externos/masivo
+// body: { sucursalId, fechaInicio, fechaFin, dias: ['sabado'..], horaIni, horaFin, empleadoId? }
+// ============================================
+app.post('/turnos-externos/masivo', (req, res) => {
+  const { sucursalId, fechaInicio, fechaFin, dias, horaIni, horaFin, empleadoId } = req.body;
+
+  if (!sucursalId || !fechaInicio || !fechaFin || !Array.isArray(dias) || dias.length === 0 || !horaIni || !horaFin) {
+    return res.status(400).json({ message: 'Faltan datos: sucursalId, fechaInicio, fechaFin, dias[], horaIni, horaFin son obligatorios.' });
+  }
+
+  // Mapa día (JS) -> columna/clave tuya
+  const mapDia = {
+    sabado: 6,
+    domingo: 0,
+    lunes: 1,
+    martes: 2,
+    miercoles: 3,
+    jueves: 4,
+    viernes: 5,
+  };
+
+  const diasSet = new Set(dias.map((d) => String(d).toLowerCase().trim()));
+  const ini = new Date(fechaInicio + 'T00:00:00');
+  const fin = new Date(fechaFin + 'T00:00:00');
+
+  if (Number.isNaN(ini.getTime()) || Number.isNaN(fin.getTime()) || ini > fin) {
+    return res.status(400).json({ message: 'Rango de fechas inválido.' });
+  }
+
+  const fechasSeleccionadas = [];
+  for (let d = new Date(ini); d <= fin; d.setDate(d.getDate() + 1)) {
+    const jsDay = d.getDay(); // 0..6
+    const diaKey = Object.keys(mapDia).find((k) => mapDia[k] === jsDay);
+    if (diaKey && diasSet.has(diaKey)) {
+      fechasSeleccionadas.push(new Date(d));
+    }
+  }
+
+  if (fechasSeleccionadas.length === 0) {
+    return res.status(400).json({ message: 'No hay fechas que coincidan con los días seleccionados.' });
+  }
+
+  const empleadoFinal = empleadoId ? Number(empleadoId) : null;
+
+  // Armamos filas para INSERT en lote
+  const filas = fechasSeleccionadas.map((fechaObj) => {
+    const fechaISO = fechaObj.toISOString().split('T')[0];
+    const extras = calcularExtrasFecha(fechaISO);
+    const horasTotales = calcularHorasTotales(horaIni, horaFin);
+
+    return [
+      empleadoFinal,
+      Number(sucursalId),
+      fechaISO,
+      extras?.semana || null,
+      extras?.dia_semana || null,
+      extras?.mes || null,
+      extras?.anio || null,
+      horaIni,
+      horaFin,
+      horasTotales,
+      'No Cargar',
+      null,
+      null,
+      null,
+      'OK',
+      'Pendiente',
+    ];
+  });
+
+  const sqlInsert = `
+    INSERT INTO turnos_externos
+      (empleado_id, sucursal_id, fecha, semana, dia_semana, mes, anio,
+       hora_inicio, hora_fin, horas_totales,
+       id_turno, asignacion, tipo_turno, franja_horaria, estado_turno, estado_ejecucion)
+    VALUES ?
+  `;
+
+  db.query(sqlInsert, [filas], (err, result) => {
+    if (err) return res.status(500).json(err);
+
+    // Auto-marca PPY si hay empleado
+    if (!empleadoFinal) {
+      return res.json({
+        message: 'Turnos masivos creados',
+        resumen: { insertados: result.affectedRows || 0, ppyMarcados: 0 },
+      });
+    }
+
+    let idx = 0;
+    let ppyMarcados = 0;
+
+    const marcar = () => {
+      if (idx >= filas.length) {
+        return res.json({
+          message: 'Turnos masivos creados',
+          resumen: { insertados: result.affectedRows || 0, ppyMarcados },
+        });
+      }
+
+      const fechaISO = filas[idx][2];
+      idx++;
+
+      autoMarcarPPYPorExterno({ empleadoId: empleadoFinal, fechaISO, textoPPY: '5PM' }, (e) => {
+        if (!e) ppyMarcados++;
+        marcar();
+      });
+    };
+
+    marcar();
+  });
+});
+
+// ============================================
+// Regla anti-duplicado (en destino):
+// existe si coincide: sucursal_id + fecha + hora_inicio + hora_fin + (empleado_id o NULL)
+// ============================================
+app.post('/turnos-externos/clonar', (req, res) => {
+  const {
+    sucursalId,
+    fechaOrigenInicio,
+    fechaOrigenFin,
+    fechaDestinoInicio,
+    incluirVacantes = true,
+    incluirAsignados = true,
+  } = req.body;
+
+  if (!fechaOrigenInicio || !fechaOrigenFin || !fechaDestinoInicio) {
+    return res.status(400).json({
+      message: 'Faltan datos: fechaOrigenInicio, fechaOrigenFin, fechaDestinoInicio.',
+    });
+  }
+
+  const oIni = new Date(fechaOrigenInicio + 'T00:00:00');
+  const oFin = new Date(fechaOrigenFin + 'T00:00:00');
+  const dIni = new Date(fechaDestinoInicio + 'T00:00:00');
+
+  if ([oIni, oFin, dIni].some((d) => Number.isNaN(d.getTime())) || oIni > oFin) {
+    return res.status(400).json({ message: 'Fechas inválidas.' });
+  }
+
+  const shiftDays = Math.round((dIni.getTime() - oIni.getTime()) / 86400000);
+
+  // -------------------------
+  // 1) Traer turnos ORIGEN
+  // -------------------------
+  const where = [];
+  const params = [];
+
+  where.push('fecha BETWEEN ? AND ?');
+  params.push(fechaOrigenInicio, fechaOrigenFin);
+
+  if (sucursalId) {
+    where.push('sucursal_id = ?');
+    params.push(Number(sucursalId));
+  }
+
+  if (!incluirVacantes) where.push('empleado_id IS NOT NULL');
+  if (!incluirAsignados) where.push('empleado_id IS NULL');
+
+  const sqlSelOrigen = `
+    SELECT id, empleado_id, sucursal_id, fecha, hora_inicio, hora_fin
+    FROM turnos_externos
+    WHERE ${where.join(' AND ')}
+    ORDER BY fecha ASC, hora_inicio ASC, id ASC
+  `;
+
+  db.query(sqlSelOrigen, params, (err, origen) => {
+    if (err) return res.status(500).json(err);
+    if (!origen || origen.length === 0) {
+      return res.status(400).json({ message: 'No hay turnos en el rango origen para clonar.' });
+    }
+
+    // -------------------------
+    // 2) Construir CANDIDATOS destino
+    // -------------------------
+    const candidatos = origen.map((t) => {
+      const fechaOrig = String(t.fecha).split('T')[0];
+      const f = new Date(fechaOrig + 'T00:00:00');
+      f.setDate(f.getDate() + shiftDays);
+      const fechaNueva = f.toISOString().split('T')[0];
+
+      return {
+        empleado_id: t.empleado_id || null,
+        sucursal_id: t.sucursal_id,
+        fecha: fechaNueva,
+        hora_inicio: t.hora_inicio,
+        hora_fin: t.hora_fin,
+      };
+    });
+
+    // Rango destino para consultar existentes
+    const destinoMin = candidatos.reduce((min, c) => (c.fecha < min ? c.fecha : min), candidatos[0].fecha);
+    const destinoMax = candidatos.reduce((max, c) => (c.fecha > max ? c.fecha : max), candidatos[0].fecha);
+
+    const sucursalesDestino = [...new Set(candidatos.map((c) => c.sucursal_id))];
+
+    // -------------------------
+    // 3) Consultar EXISTENTES destino (para no duplicar)
+    // -------------------------
+    const sqlSelDestino = `
+      SELECT empleado_id, sucursal_id, fecha, hora_inicio, hora_fin
+      FROM turnos_externos
+      WHERE fecha BETWEEN ? AND ?
+        AND sucursal_id IN (?)
+    `;
+
+    db.query(sqlSelDestino, [destinoMin, destinoMax, sucursalesDestino], (err2, existentes) => {
+      if (err2) return res.status(500).json(err2);
+
+      const key = (x) =>
+        `${x.sucursal_id}|${String(x.fecha).split('T')[0]}|${x.hora_inicio}|${x.hora_fin}|${x.empleado_id ?? 'NULL'}`;
+
+      const setExistentes = new Set((existentes || []).map(key));
+
+      const aInsertar = candidatos.filter((c) => !setExistentes.has(key(c)));
+      const omitidos = candidatos.length - aInsertar.length;
+
+      if (aInsertar.length === 0) {
+        return res.json({
+          message: 'No se clonó nada porque ya existía todo en el rango destino.',
+          resumen: {
+            origen: origen.length,
+            candidatos: candidatos.length,
+            omitidosPorDuplicado: omitidos,
+            insertados: 0,
+            shiftDays,
+          },
+        });
+      }
+
+      // -------------------------
+      // 4) Insertar SOLO los nuevos
+      // -------------------------
+      const filas = aInsertar.map((c) => {
+        const extras = calcularExtrasFecha(c.fecha);
+        const horasTotales = calcularHorasTotales(c.hora_inicio, c.hora_fin);
+
+        return [
+          c.empleado_id,
+          c.sucursal_id,
+          c.fecha,
+          extras?.semana || null,
+          extras?.dia_semana || null,
+          extras?.mes || null,
+          extras?.anio || null,
+          c.hora_inicio,
+          c.hora_fin,
+          horasTotales,
+          'No Cargar',
+          null,
+          null,
+          null,
+          'OK',
+          'Pendiente',
+        ];
+      });
+
+      const sqlIns = `
+        INSERT INTO turnos_externos
+          (empleado_id, sucursal_id, fecha, semana, dia_semana, mes, anio,
+           hora_inicio, hora_fin, horas_totales,
+           id_turno, asignacion, tipo_turno, franja_horaria, estado_turno, estado_ejecucion)
+        VALUES ?
+      `;
+
+      db.query(sqlIns, [filas], (err3, result) => {
+        if (err3) return res.status(500).json(err3);
+
+        // Auto-marca PPY (solo filas con empleado)
+        const conEmpleado = filas.filter((f) => f[0]);
+        let idx = 0;
+        let ppyMarcados = 0;
+
+        const marcar = () => {
+          if (idx >= conEmpleado.length) {
+            return res.json({
+              message: 'Clonación completada',
+              resumen: {
+                origen: origen.length,
+                candidatos: candidatos.length,
+                omitidosPorDuplicado: omitidos,
+                insertados: result.affectedRows || 0,
+                shiftDays,
+                ppyMarcados,
+              },
+            });
+          }
+
+          const f = conEmpleado[idx++];
+          const empleadoId = f[0];
+          const fechaISO = f[2];
+
+          autoMarcarPPYPorExterno({ empleadoId, fechaISO, textoPPY: '5PM' }, (e) => {
+            if (!e) ppyMarcados++;
+            marcar();
+          });
+        };
+
+        marcar();
+      });
+    });
+  });
+});
+
 // =========================
 // SERVER
 // =========================
