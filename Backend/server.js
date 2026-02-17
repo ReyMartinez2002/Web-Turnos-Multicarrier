@@ -809,7 +809,66 @@ app.delete('/cargos-lista/:id', (req, res) => {
     return res.json({ message: 'Cargo eliminado' });
   });
 });
+// =========================
+// IMPORTACIÓN MASIVA DE EMPLEADOS (JSON)
+// POST /empleados/importar
+// body: { empleados: [{ nombre, documento, celular, cargo, idInterwap, estado, sedeFijaId }] }
+// =========================
+app.post('/empleados/importar', (req, res) => {
+  const { empleados } = req.body;
 
+  if (!Array.isArray(empleados) || empleados.length === 0) {
+    return res.status(400).json({ message: 'No se recibieron empleados para importar.' });
+  }
+
+  // Normaliza y arma filas
+  const filas = empleados
+    .map((e) => {
+      const nombre = (e.nombre || '').toString().trim().toUpperCase();
+      const documento = (e.documento || '').toString().trim();
+      const celular = (e.celular || '').toString().trim();
+      const cargo = (e.cargo || '').toString().trim().toUpperCase();
+      const idInterwap = (e.idInterwap || '').toString().trim();
+      const estado = (e.estado || 'Activo').toString().trim();
+      const sedeFijaId = e.sedeFijaId && e.sedeFijaId !== '0' && e.sedeFijaId !== 0 ? e.sedeFijaId : null;
+
+      if (!nombre || !documento || !cargo) return null;
+
+      return [nombre, documento, celular, cargo, idInterwap, estado, sedeFijaId];
+    })
+    .filter(Boolean);
+
+  if (filas.length === 0) {
+    return res.status(400).json({ message: 'Todos los registros venían vacíos o inválidos (requiere nombre, documento, cargo).' });
+  }
+
+  // Inserta en lote. Si documento está UNIQUE, los duplicados fallarán.
+  // Para "saltarlos" usamos INSERT IGNORE (solo si tu documento es UNIQUE).
+  const sql = `
+    INSERT IGNORE INTO empleados
+      (nombre_completo, documento, celular, cargo, id_interwap, estado, sede_fija_id)
+    VALUES ?
+  `;
+
+  db.query(sql, [filas], (err, result) => {
+    if (err) return res.status(500).json(err);
+
+    // result.affectedRows = insertados (en INSERT IGNORE no cuenta duplicados)
+    const insertados = result.affectedRows || 0;
+    const recibidosValidos = filas.length;
+    const duplicados = Math.max(recibidosValidos - insertados, 0);
+
+    return res.json({
+      message: 'Importación finalizada',
+      resumen: {
+        recibidos: empleados.length,
+        validos: recibidosValidos,
+        insertados,
+        duplicados,
+      },
+    });
+  });
+});
 // =========================
 // SERVER
 // =========================
