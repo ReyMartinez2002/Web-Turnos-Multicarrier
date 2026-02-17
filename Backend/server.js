@@ -1269,6 +1269,29 @@ app.post('/turnos-externos/masivo', (req, res) => {
 // Regla anti-duplicado (en destino):
 // existe si coincide: sucursal_id + fecha + hora_inicio + hora_fin + (empleado_id o NULL)
 // ============================================
+// Helper seguro: convierte Date/string a "YYYY-MM-DD" sin romper por locale
+function toISODateOnly(value) {
+  if (!value) return null;
+
+  // mysql2 muchas veces devuelve Date real
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) return null;
+    return value.toISOString().slice(0, 10);
+  }
+
+  const s = String(value).trim();
+
+  // si ya viene en ISO tipo 2026-02-14 o 2026-02-14T00:00:00.000Z
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+
+  // último intento
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString().slice(0, 10);
+}
+
+// ✅ ENDPOINT COMPLETO CORREGIDO: CLONAR SIN DUPLICAR Y SIN ERROR DE FECHA
 app.post('/turnos-externos/clonar', (req, res) => {
   const {
     sucursalId,
@@ -1279,9 +1302,16 @@ app.post('/turnos-externos/clonar', (req, res) => {
     incluirAsignados = true,
   } = req.body;
 
+  // 0) Validaciones
   if (!fechaOrigenInicio || !fechaOrigenFin || !fechaDestinoInicio) {
     return res.status(400).json({
       message: 'Faltan datos: fechaOrigenInicio, fechaOrigenFin, fechaDestinoInicio.',
+    });
+  }
+
+  if (!incluirVacantes && !incluirAsignados) {
+    return res.status(400).json({
+      message: 'Selección inválida: debes incluir vacantes o asignados (al menos uno).',
     });
   }
 
@@ -1297,6 +1327,7 @@ app.post('/turnos-externos/clonar', (req, res) => {
 
   // -------------------------
   // 1) Traer turnos ORIGEN
+  // (DATE_FORMAT para evitar Date locale raro)
   // -------------------------
   const where = [];
   const params = [];
@@ -1313,7 +1344,13 @@ app.post('/turnos-externos/clonar', (req, res) => {
   if (!incluirAsignados) where.push('empleado_id IS NULL');
 
   const sqlSelOrigen = `
-    SELECT id, empleado_id, sucursal_id, fecha, hora_inicio, hora_fin
+    SELECT 
+      id, 
+      empleado_id, 
+      sucursal_id, 
+      DATE_FORMAT(fecha, '%Y-%m-%d') AS fecha,
+      hora_inicio, 
+      hora_fin
     FROM turnos_externos
     WHERE ${where.join(' AND ')}
     ORDER BY fecha ASC, hora_inicio ASC, id ASC
@@ -1326,22 +1363,34 @@ app.post('/turnos-externos/clonar', (req, res) => {
     }
 
     // -------------------------
-    // 2) Construir CANDIDATOS destino
+    // 2) Construir CANDIDATOS destino (robusto)
     // -------------------------
-    const candidatos = origen.map((t) => {
-      const fechaOrig = String(t.fecha).split('T')[0];
-      const f = new Date(fechaOrig + 'T00:00:00');
-      f.setDate(f.getDate() + shiftDays);
-      const fechaNueva = f.toISOString().split('T')[0];
+    const candidatos = (origen || [])
+      .map((t) => {
+        const fechaOrigISO = toISODateOnly(t.fecha);
+        if (!fechaOrigISO) return null;
 
-      return {
-        empleado_id: t.empleado_id || null,
-        sucursal_id: t.sucursal_id,
-        fecha: fechaNueva,
-        hora_inicio: t.hora_inicio,
-        hora_fin: t.hora_fin,
-      };
-    });
+        const f = new Date(fechaOrigISO + 'T00:00:00');
+        if (Number.isNaN(f.getTime())) return null;
+
+        f.setDate(f.getDate() + shiftDays);
+        const fechaNueva = f.toISOString().slice(0, 10); // YYYY-MM-DD
+
+        return {
+          empleado_id: t.empleado_id || null,
+          sucursal_id: t.sucursal_id,
+          fecha: fechaNueva,
+          hora_inicio: t.hora_inicio,
+          hora_fin: t.hora_fin,
+        };
+      })
+      .filter(Boolean);
+
+    if (candidatos.length === 0) {
+      return res.status(400).json({
+        message: 'No se pudieron procesar las fechas del rango origen (formato inválido).',
+      });
+    }
 
     // Rango destino para consultar existentes
     const destinoMin = candidatos.reduce((min, c) => (c.fecha < min ? c.fecha : min), candidatos[0].fecha);
@@ -1353,7 +1402,12 @@ app.post('/turnos-externos/clonar', (req, res) => {
     // 3) Consultar EXISTENTES destino (para no duplicar)
     // -------------------------
     const sqlSelDestino = `
-      SELECT empleado_id, sucursal_id, fecha, hora_inicio, hora_fin
+      SELECT 
+        empleado_id, 
+        sucursal_id, 
+        DATE_FORMAT(fecha, '%Y-%m-%d') AS fecha,
+        hora_inicio, 
+        hora_fin
       FROM turnos_externos
       WHERE fecha BETWEEN ? AND ?
         AND sucursal_id IN (?)
@@ -1363,7 +1417,7 @@ app.post('/turnos-externos/clonar', (req, res) => {
       if (err2) return res.status(500).json(err2);
 
       const key = (x) =>
-        `${x.sucursal_id}|${String(x.fecha).split('T')[0]}|${x.hora_inicio}|${x.hora_fin}|${x.empleado_id ?? 'NULL'}`;
+        `${x.sucursal_id}|${toISODateOnly(x.fecha)}|${x.hora_inicio}|${x.hora_fin}|${x.empleado_id ?? 'NULL'}`;
 
       const setExistentes = new Set((existentes || []).map(key));
 
@@ -1379,6 +1433,7 @@ app.post('/turnos-externos/clonar', (req, res) => {
             omitidosPorDuplicado: omitidos,
             insertados: 0,
             shiftDays,
+            ppyMarcados: 0,
           },
         });
       }
