@@ -1,13 +1,12 @@
 import React from 'react';
-import { Users, Calendar, Settings, LogOut } from 'lucide-react';
+import { Users, Calendar, Settings, LogOut, Briefcase } from 'lucide-react';
 
-// 1. Definimos qué propiedades espera recibir el Sidebar
+// 1. ESTA PARTE ES LA CLAVE PARA ARREGLAR EL ERROR EN APP.TSX
 interface SidebarProps {
   setVista: (vista: string) => void;
   vistaActual: string;
 }
 
-// 2. Definimos qué propiedades espera cada item del menú
 interface SidebarItemProps {
   icon: React.ReactNode;
   text: string;
@@ -15,6 +14,7 @@ interface SidebarItemProps {
   onClick?: () => void;
 }
 
+// 2. Aquí aplicamos la interface al componente
 const Sidebar: React.FC<SidebarProps> = ({ setVista, vistaActual }) => {
   return (
     <aside className="h-screen w-64 bg-white border-r border-gray-200 flex flex-col fixed left-0 top-0 z-30">
@@ -27,7 +27,6 @@ const Sidebar: React.FC<SidebarProps> = ({ setVista, vistaActual }) => {
       </div>
 
       <nav className="flex-1 p-4 space-y-2 mt-2">
-        {/* Botón Turnos */}
         <SidebarItem 
           icon={<Calendar size={20} />} 
           text="Programación Turnos" 
@@ -35,7 +34,6 @@ const Sidebar: React.FC<SidebarProps> = ({ setVista, vistaActual }) => {
           onClick={() => setVista('turnos')}
         />
         
-        {/* Botón Empleados */}
         <SidebarItem 
           icon={<Users size={20} />} 
           text="Base de Personal" 
@@ -43,8 +41,14 @@ const Sidebar: React.FC<SidebarProps> = ({ setVista, vistaActual }) => {
           onClick={() => setVista('empleados')}
         />
 
+        <SidebarItem 
+          icon={<Briefcase size={20} />} 
+          text="Clientes Externos" 
+          active={vistaActual === 'clientes'} 
+          onClick={() => setVista('clientes')}
+        />
+
         <div className="pt-4 mt-4 border-t border-gray-100">
-           {/* El botón de configuración no hace nada por ahora, así que no le pasamos onClick ni active */}
            <SidebarItem icon={<Settings size={20} />} text="Configuración" />
         </div>
       </nav>
@@ -59,7 +63,7 @@ const Sidebar: React.FC<SidebarProps> = ({ setVista, vistaActual }) => {
   );
 };
 
-// Componente auxiliar con tipos definidos
+// Componente para los botones individuales
 const SidebarItem: React.FC<SidebarItemProps> = ({ icon, text, active = false, onClick }) => (
   <div 
     onClick={onClick}
