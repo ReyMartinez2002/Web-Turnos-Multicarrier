@@ -2,10 +2,11 @@ import { useState } from 'react';
 import Sidebar from './components/Sidebar';
 import TablaTurnos from './components/TablaTurnos';
 import ListaEmpleados from './components/ListaEmpleados';
-import ListaClientes from './components/ListaClientes'; // <--- Importar aquí
+import ListaClientes from './components/ListaClientes';
+import ProgramacionExternos from './components/ProgramacionExternos'; // <--- Importación Nueva
 
 function App() {
-  // Estado para saber qué vista mostrar: 'turnos' | 'empleados' | 'clientes'
+  // Ahora el estado acepta 'externos'
   const [vistaActual, setVistaActual] = useState('turnos');
 
   return (
@@ -24,9 +25,10 @@ function App() {
         )}
 
         {vistaActual === 'empleados' && <ListaEmpleados />}
+        {vistaActual === 'clientes' && <ListaClientes />}
         
-        {/* Nueva vista agregada */}
-        {vistaActual === 'clientes' && <ListaClientes />} 
+        {/* Nueva Vista */}
+        {vistaActual === 'externos' && <ProgramacionExternos />} 
       </main>
     </div>
   );
