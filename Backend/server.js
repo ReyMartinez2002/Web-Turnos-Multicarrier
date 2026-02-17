@@ -63,24 +63,62 @@ const hayCruce = (rango1, rango2) => {
 
 // --- RUTAS DE LA API (ENDPOINTS) ---
 
-// 1. Obtener todos los empleados
+// ...
+
+// 1. Obtener todos los empleados (AHORA CON SU SEDE FIJA)
 app.get('/empleados', (req, res) => {
-    const sql = "SELECT * FROM empleados";
+    const sql = `
+        SELECT e.*, 
+               c.sucursal as nombre_sede_fija, 
+               c.empresa as nombre_empresa_fija
+        FROM empleados e
+        LEFT JOIN clientes_sucursales c ON e.sede_fija_id = c.id
+        ORDER BY e.nombre_completo ASC
+    `;
     db.query(sql, (err, result) => {
         if (err) return res.json(err);
         return res.json(result);
     });
 });
 
-// 2. Crear un empleado
+// 2. Crear un empleado (CON SEDE FIJA)
 app.post('/empleados', (req, res) => {
-    const { nombre, documento, celular, cargo, idInterwap } = req.body;
-    const sql = "INSERT INTO empleados (nombre_completo, documento, celular, cargo, id_interwap) VALUES (?, ?, ?, ?, ?)";
-    db.query(sql, [nombre, documento, celular, cargo, idInterwap], (err, result) => {
-        if (err) return res.json(err);
+    const { nombre, documento, celular, cargo, idInterwap, estado, sedeFijaId } = req.body;
+    
+    // Si sedeFijaId es 0 o vacío, lo guardamos como NULL
+    const sede = (sedeFijaId && sedeFijaId !== "0") ? sedeFijaId : null;
+
+    const sql = "INSERT INTO empleados (nombre_completo, documento, celular, cargo, id_interwap, estado, sede_fija_id) VALUES (?, ?, ?, ?, ?, ?, ?)";
+    
+    db.query(sql, [nombre, documento, celular, cargo, idInterwap, estado || 'Activo', sede], (err, result) => {
+        if (err) {
+            if (err.code === 'ER_DUP_ENTRY') return res.status(400).json({ message: "La cédula ya existe" });
+            return res.status(500).json(err);
+        }
         return res.json({ message: "Empleado creado", id: result.insertId });
     });
 });
+
+// 21. Editar Empleado (CON SEDE FIJA)
+app.put('/empleados/:id', (req, res) => {
+    const { id } = req.params;
+    const { nombre, documento, celular, cargo, idInterwap, estado, sedeFijaId } = req.body;
+    
+    const sede = (sedeFijaId && sedeFijaId !== "0") ? sedeFijaId : null;
+
+    const sql = `
+        UPDATE empleados 
+        SET nombre_completo = ?, documento = ?, celular = ?, cargo = ?, id_interwap = ?, estado = ?, sede_fija_id = ?
+        WHERE id = ?
+    `;
+    
+    db.query(sql, [nombre, documento, celular, cargo, idInterwap, estado, sede, id], (err, result) => {
+        if (err) return res.status(500).json(err);
+        return res.json({ message: "Empleado actualizado" });
+    });
+});
+
+// ...
 
 // 3. Obtener clientes/sucursales
 app.get('/clientes', (req, res) => {
@@ -486,6 +524,76 @@ app.delete('/clientes/:id', (req, res) => {
             return res.status(500).json(err);
         }
         return res.json({ message: "Cliente eliminado" });
+    });
+});
+// 21. Editar Empleado
+app.put('/empleados/:id', (req, res) => {
+    const { id } = req.params;
+    const { nombre, documento, celular, cargo, idInterwap, estado } = req.body;
+    
+    const sql = `
+        UPDATE empleados 
+        SET nombre_completo = ?, documento = ?, celular = ?, cargo = ?, id_interwap = ?, estado = ?
+        WHERE id = ?
+    `;
+    
+    db.query(sql, [nombre, documento, celular, cargo, idInterwap, estado, id], (err, result) => {
+        if (err) return res.status(500).json(err);
+        return res.json({ message: "Empleado actualizado" });
+    });
+});
+
+// 22. Eliminar Empleado (OJO: Mejor usar Inactivar)
+app.delete('/empleados/:id', (req, res) => {
+    const { id } = req.params;
+    
+    // Verificamos si tiene historial de turnos
+    const sqlCheck = "SELECT COUNT(*) as total FROM programacion_semanal WHERE empleado_id = ?";
+    
+    db.query(sqlCheck, [id], (err, result) => {
+        if (err) return res.status(500).json(err);
+        
+        if (result[0].total > 0) {
+            return res.status(400).json({ 
+                error: "No se puede eliminar: Tiene turnos asociados. Mejor cámbialo a estado 'Inactivo'." 
+            });
+        }
+
+        // Si está limpio, borramos
+        db.query("DELETE FROM empleados WHERE id = ?", [id], (errDel, resDel) => {
+            if (errDel) return res.status(500).json(errDel);
+            return res.json({ message: "Empleado eliminado definitivamente" });
+        });
+    });
+});
+
+// --- GESTIÓN DE CARGOS (LISTA MAESTRA) ---
+
+// 23. Obtener cargos
+app.get('/cargos-lista', (req, res) => {
+    db.query("SELECT * FROM cargos_lista ORDER BY nombre ASC", (err, result) => {
+        if (err) return res.json(err);
+        return res.json(result);
+    });
+});
+
+// 24. Crear cargo
+app.post('/cargos-lista', (req, res) => {
+    const { nombre } = req.body;
+    db.query("INSERT INTO cargos_lista (nombre) VALUES (?)", [nombre.toUpperCase()], (err, result) => {
+        if (err) {
+            if (err.code === 'ER_DUP_ENTRY') return res.status(400).json({ message: "El cargo ya existe" });
+            return res.status(500).json(err);
+        }
+        return res.json({ message: "Cargo agregado", id: result.insertId });
+    });
+});
+
+// 25. Eliminar cargo
+app.delete('/cargos-lista/:id', (req, res) => {
+    db.query("DELETE FROM cargos_lista WHERE id = ?", [req.params.id], (err, result) => {
+        if (err) return res.json(err);
+        return res.json({ message: "Cargo eliminado" });
     });
 });
 
