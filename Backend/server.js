@@ -20,6 +20,47 @@ db.connect(err => {
     else console.log('¡Conectado a MySQL exitosamente!');
 });
 
+// --- UTILIDAD: MAPA DE HORARIOS (TUS REGLAS) ---
+const obtenerRangoHorario = (textoTurno) => {
+    if (!textoTurno) return null;
+    const turno = textoTurno.toUpperCase().trim();
+
+    // 1. REGLAS FIJAS
+    if (turno === 'AM') return { inicio: 6, fin: 15 };        // 6am - 3pm (15:00)
+    if (turno === 'PM') return { inicio: 13, fin: 21 };       // 1pm (13:00) - 9pm (21:00)
+    if (turno === 'AM Y PM') return { inicio: 6, fin: 21 };   // Todo el día (6am - 9pm)
+    if (turno === 'DESC' || turno === 'DESCANSO') return null; // No cuenta
+    
+    // 2. PARSEO INTELIGENTE (Para "5pm a 9pm", "11 a 3", "10-6", etc.)
+    try {
+        // Quitamos letras y dejamos solo números separados por espacio
+        const numeros = turno.replace(/[^0-9\s]/g, '').trim().split(/\s+/).map(n => parseInt(n));
+        
+        if (numeros.length === 2) {
+            let [inicio, fin] = numeros;
+
+            // Ajuste Inicio (Si es menor a 6, asumimos PM)
+            if (inicio < 6) inicio += 12; 
+            
+            // Ajuste Fin (Si es menor a 6, asumimos PM, excepto 12)
+            if (fin < 6) fin += 12; 
+            else if (fin === 12 && inicio > 12) { /* Caso especial si cierra a las 12am */ } 
+            
+            return { inicio, fin };
+        }
+    } catch (e) {
+        console.log("No se pudo parsear turno manual:", turno);
+    }
+
+    return null; // Si no entendemos el turno, no lo validamos (pasa directo)
+};
+
+const hayCruce = (rango1, rango2) => {
+    if (!rango1 || !rango2) return false;
+    // Se cruzan si el inicio de uno es ANTES de que termine el otro
+    return (rango1.inicio < rango2.fin && rango1.fin > rango2.inicio);
+};
+
 // --- RUTAS DE LA API (ENDPOINTS) ---
 
 // 1. Obtener todos los empleados
@@ -153,25 +194,64 @@ app.get('/programacion-semanal', (req, res) => {
     });
 });
 
-// 10. Guardar o Actualizar un Turno (Recibiendo la FECHA)
+// 10. Guardar o Actualizar un Turno (CON VALIDACIÓN DE CRUCES)
 app.post('/programacion-semanal/actualizar', (req, res) => {
     const { sucursalId, empleadoId, tipo, dia, valor, fechaSemana } = req.body;
     
     if (!fechaSemana) return res.status(400).json({ error: "Falta fecha semana" });
 
-    const sql = `
-        INSERT INTO programacion_semanal (sucursal_id, empleado_id, tipo_empleado, fecha_inicio_semana, ${dia}) 
-        VALUES (?, ?, ?, ?, ?)
-        ON DUPLICATE KEY UPDATE ${dia} = ?
+    // 1. Obtener el Rango del Nuevo Turno
+    const rangoNuevo = obtenerRangoHorario(valor);
+
+    // Si es descanso o un texto raro, dejamos pasar
+    if (!rangoNuevo) {
+        ejecutarUpdate(); 
+        return;
+    }
+
+    // 2. Buscar si el empleado tiene OTROS turnos ese mismo día
+    const sqlCheck = `
+        SELECT sucursal_id, ${dia} as turno_existente 
+        FROM programacion_semanal 
+        WHERE empleado_id = ? 
+          AND fecha_inicio_semana = ? 
+          AND sucursal_id != ?  -- Ignorar la sucursal actual
     `;
 
-    db.query(sql, [sucursalId, empleadoId, tipo, fechaSemana, valor, valor], (err, result) => {
-        if (err) {
-            console.log(err);
-            return res.status(500).json(err);
+    db.query(sqlCheck, [empleadoId, fechaSemana, sucursalId], (err, resultados) => {
+        if (err) return res.status(500).json(err);
+
+        // 3. Verificar cruces
+        for (const fila of resultados) {
+            const rangoExistente = obtenerRangoHorario(fila.turno_existente);
+            
+            if (hayCruce(rangoNuevo, rangoExistente)) {
+                return res.status(409).json({ 
+                    error: "CRUCE DE TURNOS", 
+                    mensaje: `El empleado ya tiene turno (${fila.turno_existente}) en otra sede ese día.` 
+                });
+            }
         }
-        return res.json({ message: "Turno actualizado" });
+
+        // 4. Si no hay cruces, guardamos
+        ejecutarUpdate();
     });
+
+    function ejecutarUpdate() {
+        const sql = `
+            INSERT INTO programacion_semanal (sucursal_id, empleado_id, tipo_empleado, fecha_inicio_semana, ${dia}) 
+            VALUES (?, ?, ?, ?, ?)
+            ON DUPLICATE KEY UPDATE ${dia} = ?
+        `;
+
+        db.query(sql, [sucursalId, empleadoId, tipo, fechaSemana, valor, valor], (err, result) => {
+            if (err) {
+                console.log(err);
+                return res.status(500).json(err);
+            }
+            return res.json({ message: "Turno actualizado" });
+        });
+    }
 });
 
 // 11. Agregar Empleado a la Programación (Recibiendo la FECHA)
@@ -207,7 +287,6 @@ app.post('/rotar-turnos', (req, res) => {
     if (!fechaSemana) return res.status(400).json({ error: "Falta fecha semana para rotar" });
 
     try {
-        // 1. Obtener todas las filas de FIJOS de ESA SEMANA
         const sqlGet = `
             SELECT * FROM programacion_semanal 
             WHERE tipo_empleado = 'Fijo' AND fecha_inicio_semana = ?
@@ -220,7 +299,6 @@ app.post('/rotar-turnos', (req, res) => {
                 return res.status(500).json({ error: "Error al leer turnos" });
             }
 
-            // Agrupar por sucursal
             const porSucursal = {};
             resultados.forEach(fila => {
                 if (!porSucursal[fila.sucursal_id]) porSucursal[fila.sucursal_id] = [];
@@ -229,7 +307,6 @@ app.post('/rotar-turnos', (req, res) => {
 
             const actualizaciones = [];
 
-            // 2. Calcular la rotación (El turno de arriba baja)
             Object.keys(porSucursal).forEach(sucursalId => {
                 const filas = porSucursal[sucursalId];
                 
@@ -269,7 +346,6 @@ app.post('/rotar-turnos', (req, res) => {
                 return res.json({ message: "No hubo cambios (pocos fijos)" });
             }
 
-            // 3. Ejecutar los UPDATE
             const promesas = actualizaciones.map(act => {
                 return new Promise((resolve, reject) => {
                     const sqlUpdate = `
@@ -312,6 +388,41 @@ app.put('/programacion-semanal/editar-empleado', (req, res) => {
             return res.status(500).json({ error: "Error al actualizar empleado" });
         }
         return res.json({ message: "Empleado actualizado correctamente" });
+    });
+});
+
+// 15. REPLICAR PROGRAMACIÓN (Solo Fijos, de una semana a otra)
+app.post('/replicar-programacion', (req, res) => {
+    const { fechaAnterior, fechaNueva } = req.body;
+
+    if (!fechaAnterior || !fechaNueva) {
+        return res.status(400).json({ error: "Faltan fechas" });
+    }
+
+    const sqlCheck = "SELECT COUNT(*) as total FROM programacion_semanal WHERE fecha_inicio_semana = ?";
+    
+    db.query(sqlCheck, [fechaNueva], (err, result) => {
+        if (err) return res.status(500).json(err);
+        
+        if (result[0].total > 0) {
+            return res.json({ message: "La semana ya tiene datos, no se replicó nada." });
+        }
+
+        const sqlCopy = `
+            INSERT INTO programacion_semanal 
+            (sucursal_id, empleado_id, tipo_empleado, fecha_inicio_semana, sabado, domingo, lunes, martes, miercoles, jueves, viernes)
+            SELECT sucursal_id, empleado_id, 'Fijo', ?, sabado, domingo, lunes, martes, miercoles, jueves, viernes
+            FROM programacion_semanal
+            WHERE fecha_inicio_semana = ? AND tipo_empleado = 'Fijo'
+        `;
+
+        db.query(sqlCopy, [fechaNueva, fechaAnterior], (errCopy, resultCopy) => {
+            if (errCopy) return res.status(500).json(errCopy);
+            return res.json({ 
+                message: "Programación replicada exitosamente", 
+                filasCopiadas: resultCopy.affectedRows 
+            });
+        });
     });
 });
 
