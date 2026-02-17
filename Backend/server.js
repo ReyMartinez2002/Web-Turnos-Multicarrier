@@ -869,6 +869,112 @@ app.post('/empleados/importar', (req, res) => {
     });
   });
 });
+//IMPORTACIÓN MASIVA DE CLIENTES / SUCURSALES (JSON)
+// POST /clientes/importar
+// body: { clientes: [{ empresa, sucursal, idCliente, idInterwap, direccion }] }
+// =========================
+app.post('/clientes/importar', (req, res) => {
+  const { clientes } = req.body;
+
+  if (!Array.isArray(clientes) || clientes.length === 0) {
+    return res.status(400).json({ message: 'No se recibieron clientes para importar.' });
+  }
+
+  // Normaliza y arma filas
+  const filas = clientes
+    .map((c) => {
+      const empresa = (c.empresa || '').toString().trim().toUpperCase();
+      const sucursal = (c.sucursal || '').toString().trim().toUpperCase();
+      const idCliente = (c.idCliente || '').toString().trim() || null;
+      const idInterwap = (c.idInterwap || '').toString().trim() || null;
+      const direccion = (c.direccion || '').toString().trim() || null;
+
+      if (!empresa || !sucursal) return null;
+
+      return [empresa, sucursal, idCliente, idInterwap, direccion];
+    })
+    .filter(Boolean);
+
+  if (filas.length === 0) {
+    return res.status(400).json({ message: 'Todos los registros venían vacíos o inválidos (requiere empresa y sucursal).' });
+  }
+
+  // IMPORTANTE:
+  // - Esto usa INSERT IGNORE para que si tienes un UNIQUE (por ejemplo empresa+sucursal o id_interwap),
+  //   los duplicados se ignoren sin romper la importación.
+  const sql = `
+    INSERT IGNORE INTO clientes_sucursales
+      (empresa, sucursal, id_cliente_interno, id_interwap, direccion)
+    VALUES ?
+  `;
+
+  db.query(sql, [filas], (err, result) => {
+    if (err) return res.status(500).json(err);
+
+    const insertados = result.affectedRows || 0;
+    const validos = filas.length;
+    const duplicados = Math.max(validos - insertados, 0);
+
+    return res.json({
+      message: 'Importación de sedes finalizada',
+      resumen: {
+        recibidos: clientes.length,
+        validos,
+        insertados,
+        duplicados,
+      },
+    });
+  });
+});
+
+// ============================================
+// PROGRAMACIÓN SEMANAL + OVERLAY DE EXTERNOS
+// GET /programacion-semanal-con-externos?fecha=YYYY-MM-DD
+// ============================================
+app.get('/programacion-semanal-con-externos', (req, res) => {
+  const { fecha } = req.query; // fecha inicio semana (YYYY-MM-DD)
+  if (!fecha) return res.status(400).json({ error: 'Se requiere ?fecha=YYYY-MM-DD' });
+
+  const sqlPPY = `
+    SELECT p.*,
+           e.nombre_completo as nombre_empleado,
+           c.sucursal as nombre_sucursal,
+           c.empresa as nombre_empresa
+    FROM programacion_semanal p
+    JOIN empleados e ON p.empleado_id = e.id
+    JOIN clientes_sucursales c ON p.sucursal_id = c.id
+    WHERE p.fecha_inicio_semana = ?
+  `;
+
+  const sqlExt = `
+    SELECT t.id,
+           t.empleado_id,
+           t.fecha,
+           t.hora_inicio,
+           t.hora_fin,
+           c.empresa,
+           c.sucursal
+    FROM turnos_externos t
+    JOIN clientes_sucursales c ON t.sucursal_id = c.id
+    WHERE t.fecha BETWEEN ? AND DATE_ADD(?, INTERVAL 6 DAY)
+      AND t.empleado_id IS NOT NULL
+    ORDER BY t.fecha ASC, t.hora_inicio ASC
+  `;
+
+  db.query(sqlPPY, [fecha], (err1, programacion) => {
+    if (err1) return res.status(500).json(err1);
+
+    db.query(sqlExt, [fecha, fecha], (err2, externos) => {
+      if (err2) return res.status(500).json(err2);
+
+      return res.json({
+        fecha_inicio_semana: fecha,
+        programacion,
+        externos,
+      });
+    });
+  });
+});
 // =========================
 // SERVER
 // =========================
