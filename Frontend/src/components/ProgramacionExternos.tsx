@@ -1,5 +1,21 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Plus, Edit, Trash2, X, Calendar, Search, Check, ArrowUp, ArrowDown, UserMinus, AlertTriangle } from 'lucide-react';
+import React, { useMemo, useState, useEffect, useCallback } from 'react';
+import * as XLSX from 'xlsx';
+import {
+  Plus,
+  Edit,
+  Trash2,
+  X,
+  Calendar,
+  Search,
+  Check,
+  ArrowUp,
+  ArrowDown,
+  UserMinus,
+  AlertTriangle,
+  Upload,
+  Filter,
+  Layers,
+} from 'lucide-react';
 
 interface EmpleadoBD {
   id: number;
@@ -20,27 +36,33 @@ interface SucursalBD {
 
 interface TurnoExterno {
   id: number;
-  empleadoId: number | null; // Puede ser null si está vacante
+  empleadoId: number | null;
   sucursalId: number;
+
   nombre?: string;
   cc?: string;
   cargo?: string;
   idInterMen?: string;
+
   empresa?: string;
   sucursal?: string;
   idSucursalInterwap?: string;
+
   idTurno: string;
   fecha: string;
   semana: number;
   dia: string;
   mes: string;
   anio: number;
+
   horaIni: string;
   horaFin: string;
   horasTotales: number;
+
   asignacion: string;
   tipoTurno: string;
   franjaHoraria: string;
+
   estadoTurno: string;
   estadoEjecucion: string;
 }
@@ -51,6 +73,29 @@ type ErrorDetalleCruce = {
   campos: { label: string; value: string }[];
 };
 
+type ExcelRow = Record<string, unknown>;
+
+type TurnoImportRow = {
+  empleadoId?: number;
+  documento?: string;
+  sucursalId: number;
+  fecha: string;
+  horaIni: string;
+  horaFin: string;
+};
+
+type DiaKey = 'sabado' | 'domingo' | 'lunes' | 'martes' | 'miercoles' | 'jueves' | 'viernes';
+
+const DIAS: { key: DiaKey; label: string }[] = [
+  { key: 'sabado', label: 'Sáb' },
+  { key: 'domingo', label: 'Dom' },
+  { key: 'lunes', label: 'Lun' },
+  { key: 'martes', label: 'Mar' },
+  { key: 'miercoles', label: 'Mié' },
+  { key: 'jueves', label: 'Jue' },
+  { key: 'viernes', label: 'Vie' },
+];
+
 const ProgramacionExternos = () => {
   const [listaEmpleados, setListaEmpleados] = useState<EmpleadoBD[]>([]);
   const [listaSucursales, setListaSucursales] = useState<SucursalBD[]>([]);
@@ -60,10 +105,42 @@ const ProgramacionExternos = () => {
   const [busqueda, setBusqueda] = useState('');
   const [ordenFecha, setOrdenFecha] = useState<'asc' | 'desc'>('desc');
 
+  // filtros avanzados
+  const [fEmpresa, setFEmpresa] = useState<string>('');
+  const [fSucursalId, setFSucursalId] = useState<string>('');
+  const [fVacantes, setFVacantes] = useState(false);
+  const [fDesde, setFDesde] = useState<string>('');
+  const [fHasta, setFHasta] = useState<string>('');
+  const [buscarSucursalFiltro, setBuscarSucursalFiltro] = useState('');
+
   const [modalAbierto, setModalAbierto] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
 
+  // modal masivo
+  const [modalMasivo, setModalMasivo] = useState(false);
+  const [masivoSucursalTerm, setMasivoSucursalTerm] = useState('');
+  const [masivoSucursalId, setMasivoSucursalId] = useState<number | null>(null);
+  const [masivoFechaInicio, setMasivoFechaInicio] = useState('');
+  const [masivoFechaFin, setMasivoFechaFin] = useState('');
+  const [masivoDias, setMasivoDias] = useState<Record<DiaKey, boolean>>({
+    sabado: true,
+    domingo: true,
+    lunes: true,
+    martes: true,
+    miercoles: true,
+    jueves: true,
+    viernes: true,
+  });
+  const [masivoHoraIni, setMasivoHoraIni] = useState('10:00');
+  const [masivoHoraFin, setMasivoHoraFin] = useState('20:00');
+  const [masivoEmpleadoTerm, setMasivoEmpleadoTerm] = useState('');
+  const [masivoEmpleadoId, setMasivoEmpleadoId] = useState<number | null>(null);
+  const [creandoMasivo, setCreandoMasivo] = useState(false);
+
+  const [buscarEmpleado, setBuscarEmpleado] = useState('');
   const [errorModal, setErrorModal] = useState<ErrorDetalleCruce | null>(null);
+
+  const [importando, setImportando] = useState(false);
 
   const turnoVacio: TurnoExterno = {
     id: 0,
@@ -177,7 +254,21 @@ const ProgramacionExternos = () => {
     };
   }, [cargarDatosMaestros, cargarTurnos]);
 
-  // --- HELPERS ---
+  const fechaEnRango = (fecha: string, desde: string, hasta: string) => {
+    if (!fecha) return false;
+    const t = new Date(fecha + 'T00:00:00').getTime();
+    if (desde) {
+      const td = new Date(desde + 'T00:00:00').getTime();
+      if (t < td) return false;
+    }
+    if (hasta) {
+      const th = new Date(hasta + 'T00:00:00').getTime();
+      if (t > th) return false;
+    }
+    return true;
+  };
+
+  // --- HELPERS FORM ---
   const actualizarHoras = (hIni: string, hFin: string) => {
     const nuevoForm = { ...formulario, horaIni: hIni, horaFin: hFin };
     if (hIni && hFin) {
@@ -222,6 +313,15 @@ const ProgramacionExternos = () => {
     }));
   };
 
+  const limpiarFiltros = () => {
+    setFEmpresa('');
+    setFSucursalId('');
+    setFVacantes(false);
+    setFDesde('');
+    setFHasta('');
+    setBuscarSucursalFiltro('');
+  };
+
   // --- SELECCIONES ---
   const handleEmpleadoSelect = (
     e: React.ChangeEvent<HTMLSelectElement> | React.MouseEvent<HTMLButtonElement>,
@@ -240,7 +340,6 @@ const ProgramacionExternos = () => {
         asignacion: emp.cargo,
       }));
     } else {
-      // si eligen "-- Sin asignar --"
       setFormulario((prev) => ({
         ...prev,
         empleadoId: null,
@@ -382,9 +481,186 @@ const ProgramacionExternos = () => {
     }
   };
 
-  // --- VISUALIZACIÓN ---
+  // --- IMPORTAR EXCEL (MASIVO) ---
+  const normalizarHora = (h: unknown) => {
+    const s = String(h ?? '').trim();
+    if (!s) return '';
+    const m = s.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+    if (m) return `${m[1].padStart(2, '0')}:${m[2]}`;
+    return s;
+  };
+
+  const normalizarFechaExcel = (v: unknown) => {
+    if (!v) return '';
+    if (typeof v === 'string') {
+      const s = v.trim();
+      const iso = s.match(/^(\d{4})[-/](\d{2})[-/](\d{2})$/);
+      if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+      return s;
+    }
+
+    if (typeof v === 'number') {
+      const d = XLSX.SSF.parse_date_code(v);
+      if (!d) return '';
+      const mm = String(d.m).padStart(2, '0');
+      const dd = String(d.d).padStart(2, '0');
+      return `${d.y}-${mm}-${dd}`;
+    }
+
+    return String(v).split('T')[0];
+  };
+
+  const importarExcelMasivo = async (file: File) => {
+    setImportando(true);
+    try {
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: 'array' });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json<ExcelRow>(sheet, { defval: '' });
+
+      const normalizarKey = (k: string) =>
+        k
+          .toUpperCase()
+          .trim()
+          .replace(/\./g, '')
+          .replace(/\s+/g, '')
+          .replace(/_/g, '');
+
+      const normalizarRow = (r: ExcelRow) => {
+        const out: Record<string, unknown> = {};
+        Object.keys(r).forEach((k) => {
+          out[normalizarKey(k)] = r[k];
+        });
+        return out;
+      };
+
+      const turnosImport: TurnoImportRow[] = rows
+        .map((raw) => {
+          const r = normalizarRow(raw);
+
+          const documento = String(r.CC ?? r.DOCUMENTO ?? '').trim();
+          const empleadoIdStr = String(r.EMPLEADOID ?? '').trim();
+          const empleadoId = empleadoIdStr ? Number(empleadoIdStr) : undefined;
+
+          const sucursalIdStr = String(r.IDSUCURSAL ?? r.SUCURSALID ?? '').trim();
+          const sucursalId = Number(sucursalIdStr);
+
+          const fecha = normalizarFechaExcel(r.FECHA);
+          const horaIni = normalizarHora(r.HINI ?? r.HORAINI);
+          const horaFin = normalizarHora(r.HFIN ?? r.HORAFIN);
+
+          return {
+            ...(empleadoId ? { empleadoId } : {}),
+            ...(documento ? { documento } : {}),
+            sucursalId,
+            fecha,
+            horaIni,
+            horaFin,
+          };
+        })
+        .filter(
+          (t) =>
+            Boolean(t.sucursalId) &&
+            Boolean(t.fecha) &&
+            Boolean(t.horaIni) &&
+            Boolean(t.horaFin) &&
+            (Boolean(t.empleadoId) || Boolean(t.documento))
+        );
+
+      if (turnosImport.length === 0) {
+        setErrorModal({
+          titulo: 'Excel inválido',
+          mensaje:
+            'No se encontraron filas válidas. Requiere ID_SUCURSAL, FECHA, H. INI, H. FIN y (CC/DOCUMENTO o EMPLEADO_ID).',
+          campos: [],
+        });
+        return;
+      }
+
+      const res = await fetch('http://localhost:3001/turnos-externos/importar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ turnos: turnosImport }),
+      });
+
+      const data = (await res.json().catch(() => null)) as
+        | {
+            message?: string;
+            resumen?: { recibidos?: number; validos?: number; insertados?: number; ppyMarcados?: number };
+          }
+        | null;
+
+      if (!res.ok) {
+        setErrorModal({
+          titulo: 'Error importando',
+          mensaje: data?.message || `Error HTTP ${res.status}`,
+          campos: [],
+        });
+        return;
+      }
+
+      alert(
+        `Importación completa:\n` +
+          `Insertados: ${data?.resumen?.insertados ?? '-'}\n` +
+          `PPY marcados: ${data?.resumen?.ppyMarcados ?? '-'}`
+      );
+
+      await cargarTurnos();
+    } catch (e) {
+      console.error(e);
+      setErrorModal({
+        titulo: 'Error leyendo Excel',
+        mensaje: 'No se pudo leer el archivo. Verifica que sea .xlsx/.xls y que tenga encabezados.',
+        campos: [],
+      });
+    } finally {
+      setImportando(false);
+    }
+  };
+
+  // --- DATA PARA SELECTORES ---
+  const empresasDisponibles = useMemo(() => {
+    const set = new Set<string>();
+    listaSucursales.forEach((s) => {
+      if (s.empresa) set.add(s.empresa);
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [listaSucursales]);
+
+  const sucursalesFiltradasParaFiltro = useMemo(() => {
+    const term = buscarSucursalFiltro.trim().toLowerCase();
+    return listaSucursales
+      .filter((s) => (fEmpresa ? s.empresa === fEmpresa : true))
+      .filter((s) => (term ? `${s.empresa} ${s.sucursal}`.toLowerCase().includes(term) : true))
+      .sort((a, b) => `${a.empresa} ${a.sucursal}`.localeCompare(`${b.empresa} ${b.sucursal}`));
+  }, [listaSucursales, fEmpresa, buscarSucursalFiltro]);
+
+  const empleadosFiltradosParaModal = useMemo(() => {
+    const term = buscarEmpleado.trim().toLowerCase();
+    if (!term) return listaEmpleados;
+    return listaEmpleados.filter((e) => `${e.nombre_completo} ${e.documento}`.toLowerCase().includes(term));
+  }, [listaEmpleados, buscarEmpleado]);
+
+  const sucursalesFiltradasMasivo = useMemo(() => {
+    const term = masivoSucursalTerm.trim().toLowerCase();
+    if (!term) return listaSucursales.slice(0, 40); // limita para no renderizar 1000
+    return listaSucursales
+      .filter((s) => `${s.empresa} ${s.sucursal}`.toLowerCase().includes(term))
+      .slice(0, 50);
+  }, [listaSucursales, masivoSucursalTerm]);
+
+  const empleadosFiltradosMasivo = useMemo(() => {
+    const term = masivoEmpleadoTerm.trim().toLowerCase();
+    if (!term) return listaEmpleados.slice(0, 40);
+    return listaEmpleados
+      .filter((e) => `${e.nombre_completo} ${e.documento}`.toLowerCase().includes(term))
+      .slice(0, 50);
+  }, [listaEmpleados, masivoEmpleadoTerm]);
+
+  // --- VISUALIZACIÓN (con filtros avanzados) ---
   const procesarTurnos = () => {
     let resultado = [...turnos];
+
     if (busqueda) {
       const termino = busqueda.toLowerCase();
       resultado = resultado.filter(
@@ -395,16 +671,106 @@ const ProgramacionExternos = () => {
           (t.cc && t.cc.includes(termino))
       );
     }
+
+    if (fEmpresa) resultado = resultado.filter((t) => (t.empresa || '') === fEmpresa);
+    if (fSucursalId) resultado = resultado.filter((t) => String(t.sucursalId) === String(fSucursalId));
+    if (fVacantes) resultado = resultado.filter((t) => !t.nombre);
+    if (fDesde || fHasta) resultado = resultado.filter((t) => fechaEnRango(t.fecha, fDesde, fHasta));
+
     resultado.sort((a, b) => {
       const fechaA = new Date(a.fecha).getTime();
       const fechaB = new Date(b.fecha).getTime();
       return ordenFecha === 'asc' ? fechaA - fechaB : fechaB - fechaA;
     });
+
     return resultado;
   };
 
   const turnosVisuales = procesarTurnos();
   const toggleOrdenFecha = () => setOrdenFecha((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+
+  // --- CREAR MASIVO ---
+  const toggleMasivoDia = (k: DiaKey) => setMasivoDias((prev) => ({ ...prev, [k]: !prev[k] }));
+
+  const resetMasivo = () => {
+    setMasivoSucursalTerm('');
+    setMasivoSucursalId(null);
+    setMasivoFechaInicio('');
+    setMasivoFechaFin('');
+    setMasivoDias({
+      sabado: true,
+      domingo: true,
+      lunes: true,
+      martes: true,
+      miercoles: true,
+      jueves: true,
+      viernes: true,
+    });
+    setMasivoHoraIni('10:00');
+    setMasivoHoraFin('20:00');
+    setMasivoEmpleadoTerm('');
+    setMasivoEmpleadoId(null);
+  };
+
+  const crearMasivo = async () => {
+    const diasSeleccionados = Object.entries(masivoDias)
+      .filter(([, v]) => v)
+      .map(([k]) => k) as DiaKey[];
+
+    if (!masivoSucursalId || !masivoFechaInicio || !masivoFechaFin || diasSeleccionados.length === 0 || !masivoHoraIni || !masivoHoraFin) {
+      setErrorModal({
+        titulo: 'Faltan datos',
+        mensaje: 'Sucursal, fecha inicio/fin, días y horas son obligatorios.',
+        campos: [],
+      });
+      return;
+    }
+
+    setCreandoMasivo(true);
+    try {
+      const res = await fetch('http://localhost:3001/turnos-externos/masivo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sucursalId: masivoSucursalId,
+          fechaInicio: masivoFechaInicio,
+          fechaFin: masivoFechaFin,
+          dias: diasSeleccionados,
+          horaIni: masivoHoraIni,
+          horaFin: masivoHoraFin,
+          empleadoId: masivoEmpleadoId, // puede ser null => vacantes
+        }),
+      });
+
+      const data = (await res.json().catch(() => null)) as
+        | { message?: string; resumen?: { insertados?: number; ppyMarcados?: number } }
+        | null;
+
+      if (!res.ok) {
+        setErrorModal({
+          titulo: 'Error creando masivo',
+          mensaje: data?.message || `Error HTTP ${res.status}`,
+          campos: [],
+        });
+        return;
+      }
+
+      alert(`Creación masiva lista.\nInsertados: ${data?.resumen?.insertados ?? '-'}\nPPY marcados: ${data?.resumen?.ppyMarcados ?? '-'}`);
+
+      setModalMasivo(false);
+      resetMasivo();
+      await cargarTurnos();
+    } catch (e) {
+      console.error(e);
+      setErrorModal({
+        titulo: 'Error de conexión',
+        mensaje: 'No se pudo contactar el servidor.',
+        campos: [],
+      });
+    } finally {
+      setCreandoMasivo(false);
+    }
+  };
 
   return (
     <div className="space-y-6 p-1">
@@ -426,16 +792,126 @@ const ProgramacionExternos = () => {
               className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>
+
+          <button
+            onClick={() => {
+              resetMasivo();
+              setModalMasivo(true);
+            }}
+            className="bg-slate-900 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-slate-800 transition-colors font-medium whitespace-nowrap"
+            title="Crear varios turnos al tiempo"
+          >
+            <Layers size={18} /> Crear Masivo
+          </button>
+
+          <label
+            className={`px-4 py-2 rounded-lg flex items-center gap-2 transition-colors font-medium cursor-pointer whitespace-nowrap ${
+              importando ? 'bg-emerald-400 text-white' : 'bg-emerald-600 hover:bg-emerald-700 text-white'
+            }`}
+            title="Importar Excel"
+          >
+            <Upload size={18} /> {importando ? 'Importando...' : 'Importar Excel'}
+            <input
+              type="file"
+              accept=".xlsx,.xls"
+              className="hidden"
+              disabled={importando}
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) importarExcelMasivo(file);
+                e.currentTarget.value = '';
+              }}
+            />
+          </label>
+
           <button
             onClick={() => {
               setFormulario(turnoVacio);
+              setBuscarEmpleado('');
               setIsEditing(false);
               setModalAbierto(true);
             }}
-            className="bg-blue-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-blue-700 transition-colors font-medium"
+            className="bg-blue-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-blue-700 transition-colors font-medium whitespace-nowrap"
           >
             <Plus size={18} /> Crear Turno
           </button>
+        </div>
+      </div>
+
+      {/* FILTROS AVANZADOS */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+        <div className="flex items-center gap-2 mb-3 text-gray-800 font-bold">
+          <Filter size={18} className="text-slate-700" />
+          Filtros
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-6 gap-3">
+          <div className="md:col-span-2">
+            <label className="block text-xs font-bold mb-1 text-gray-600">Empresa</label>
+            <select
+              value={fEmpresa}
+              onChange={(e) => {
+                setFEmpresa(e.target.value);
+                setFSucursalId('');
+              }}
+              className="w-full border rounded-lg p-2 bg-white"
+            >
+              <option value="">-- Todas --</option>
+              {empresasDisponibles.map((emp) => (
+                <option key={emp} value={emp}>
+                  {emp}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="md:col-span-2">
+            <label className="block text-xs font-bold mb-1 text-gray-600">Buscar sucursal</label>
+            <input
+              value={buscarSucursalFiltro}
+              onChange={(e) => setBuscarSucursalFiltro(e.target.value)}
+              placeholder="Ej: BELLA SUIZA..."
+              className="w-full border rounded-lg p-2"
+            />
+          </div>
+
+          <div className="md:col-span-2">
+            <label className="block text-xs font-bold mb-1 text-gray-600">Sucursal</label>
+            <select value={fSucursalId} onChange={(e) => setFSucursalId(e.target.value)} className="w-full border rounded-lg p-2 bg-white">
+              <option value="">-- Todas --</option>
+              {sucursalesFiltradasParaFiltro.map((s) => (
+                <option key={s.id} value={String(s.id)}>
+                  {s.empresa} - {s.sucursal} (ID {s.id})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold mb-1 text-gray-600">Desde</label>
+            <input value={fDesde} onChange={(e) => setFDesde(e.target.value)} type="date" className="w-full border rounded-lg p-2" />
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold mb-1 text-gray-600">Hasta</label>
+            <input value={fHasta} onChange={(e) => setFHasta(e.target.value)} type="date" className="w-full border rounded-lg p-2" />
+          </div>
+
+          <div className="flex items-end gap-3">
+            <label className="flex items-center gap-2 text-sm font-semibold text-gray-700">
+              <input type="checkbox" checked={fVacantes} onChange={(e) => setFVacantes(e.target.checked)} />
+              Solo vacantes
+            </label>
+          </div>
+
+          <div className="md:col-span-6 flex justify-between items-center pt-2">
+            <div className="text-xs text-gray-500">
+              Mostrando <span className="font-bold">{turnosVisuales.length}</span> turno(s)
+            </div>
+            <button onClick={limpiarFiltros} className="text-sm font-bold text-slate-700 hover:text-slate-900 underline">
+              Limpiar filtros
+            </button>
+          </div>
         </div>
       </div>
 
@@ -485,6 +961,7 @@ const ProgramacionExternos = () => {
                   <td className="p-3 border-r">
                     <div className="font-bold text-blue-700">{t.empresa}</div>
                     <div className="text-xs font-semibold text-gray-600">{t.sucursal}</div>
+                    <div className="text-[11px] text-gray-400">ID Sucursal: {t.sucursalId}</div>
                   </td>
                   <td className="p-3 text-center border-r">
                     <div className="font-medium text-gray-800">{t.fecha}</div>
@@ -537,7 +1014,159 @@ const ProgramacionExternos = () => {
         </div>
       </div>
 
-      {/* MODAL CREAR/EDITAR */}
+      {/* MODAL MASIVO */}
+      {modalMasivo && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl overflow-hidden border border-gray-200">
+            <div className="bg-gradient-to-r from-slate-900 to-slate-800 p-4 flex justify-between items-center text-white">
+              <h3 className="font-extrabold text-lg flex gap-2 items-center">
+                <Layers /> Crear turnos masivos
+              </h3>
+              <button onClick={() => setModalMasivo(false)} className="hover:text-gray-300">
+                <X />
+              </button>
+            </div>
+
+            <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Sucursal buscable */}
+              <div className="md:col-span-2">
+                <label className="block text-xs font-bold mb-1 text-gray-700">Sucursal / Cliente (buscable)</label>
+                <input
+                  value={masivoSucursalTerm}
+                  onChange={(e) => {
+                    setMasivoSucursalTerm(e.target.value);
+                    setMasivoSucursalId(null);
+                  }}
+                  placeholder="Escribe para buscar: ej 'Bella Suiza' o 'Pastaio'..."
+                  className="w-full border rounded-xl p-3"
+                />
+                <div className="mt-2 max-h-44 overflow-auto border rounded-xl bg-white">
+                  {sucursalesFiltradasMasivo.map((s) => (
+                    <button
+                      key={s.id}
+                      onClick={() => {
+                        setMasivoSucursalId(s.id);
+                        setMasivoSucursalTerm(`${s.empresa} - ${s.sucursal} (ID ${s.id})`);
+                      }}
+                      className={`w-full text-left px-3 py-2 hover:bg-indigo-50 transition ${
+                        masivoSucursalId === s.id ? 'bg-indigo-100' : ''
+                      }`}
+                    >
+                      <div className="font-bold text-sm text-gray-800">{s.empresa}</div>
+                      <div className="text-xs text-gray-600">
+                        {s.sucursal} <span className="text-gray-400">— ID {s.id}</span>
+                      </div>
+                    </button>
+                  ))}
+                  {sucursalesFiltradasMasivo.length === 0 && (
+                    <div className="p-3 text-sm text-gray-500">No hay coincidencias.</div>
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold mb-1 text-gray-700">Fecha inicio</label>
+                <input value={masivoFechaInicio} onChange={(e) => setMasivoFechaInicio(e.target.value)} type="date" className="w-full border rounded-xl p-3" />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold mb-1 text-gray-700">Fecha fin</label>
+                <input value={masivoFechaFin} onChange={(e) => setMasivoFechaFin(e.target.value)} type="date" className="w-full border rounded-xl p-3" />
+              </div>
+
+              <div className="md:col-span-2">
+                <label className="block text-xs font-bold mb-2 text-gray-700">Días</label>
+                <div className="flex flex-wrap gap-2">
+                  {DIAS.map((d) => (
+                    <button
+                      key={d.key}
+                      onClick={() => toggleMasivoDia(d.key)}
+                      className={`px-3 py-2 rounded-full text-sm font-bold border transition ${
+                        masivoDias[d.key] ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-800 border-gray-300 hover:bg-gray-50'
+                      }`}
+                    >
+                      {d.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold mb-1 text-gray-700">Hora inicio</label>
+                <input value={masivoHoraIni} onChange={(e) => setMasivoHoraIni(e.target.value)} type="time" className="w-full border rounded-xl p-3" />
+              </div>
+              <div>
+                <label className="block text-xs font-bold mb-1 text-gray-700">Hora fin</label>
+                <input value={masivoHoraFin} onChange={(e) => setMasivoHoraFin(e.target.value)} type="time" className="w-full border rounded-xl p-3" />
+              </div>
+
+              {/* Empleado buscable (opcional) */}
+              <div className="md:col-span-2">
+                <label className="block text-xs font-bold mb-1 text-gray-700">Empleado (opcional) — si lo dejas vacío quedan VACANTES</label>
+                <input
+                  value={masivoEmpleadoTerm}
+                  onChange={(e) => {
+                    setMasivoEmpleadoTerm(e.target.value);
+                    setMasivoEmpleadoId(null);
+                  }}
+                  placeholder="Buscar por nombre o CC..."
+                  className="w-full border rounded-xl p-3"
+                />
+                <div className="mt-2 max-h-44 overflow-auto border rounded-xl bg-white">
+                  <button
+                    onClick={() => {
+                      setMasivoEmpleadoId(null);
+                      setMasivoEmpleadoTerm('');
+                    }}
+                    className={`w-full text-left px-3 py-2 hover:bg-orange-50 transition ${masivoEmpleadoId === null ? 'bg-orange-50' : ''}`}
+                  >
+                    <div className="font-bold text-sm text-orange-700">Vacante (sin asignar)</div>
+                    <div className="text-xs text-gray-600">Se crean los turnos y luego asignas.</div>
+                  </button>
+
+                  {empleadosFiltradosMasivo.map((e) => (
+                    <button
+                      key={e.id}
+                      onClick={() => {
+                        setMasivoEmpleadoId(e.id);
+                        setMasivoEmpleadoTerm(`${e.nombre_completo} (CC ${e.documento})`);
+                      }}
+                      className={`w-full text-left px-3 py-2 hover:bg-indigo-50 transition ${
+                        masivoEmpleadoId === e.id ? 'bg-indigo-100' : ''
+                      }`}
+                    >
+                      <div className="font-bold text-sm text-gray-800">{e.nombre_completo}</div>
+                      <div className="text-xs text-gray-600">CC: {e.documento} — {e.cargo}</div>
+                    </button>
+                  ))}
+                  {empleadosFiltradosMasivo.length === 0 && (
+                    <div className="p-3 text-sm text-gray-500">No hay coincidencias.</div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="p-4 border-t bg-gray-50 flex justify-end gap-3">
+              <button
+                onClick={() => setModalMasivo(false)}
+                className="px-4 py-2 text-gray-700 font-semibold hover:bg-gray-200 rounded-xl"
+                disabled={creandoMasivo}
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={crearMasivo}
+                className="px-6 py-2 bg-green-600 text-white font-extrabold rounded-xl hover:bg-green-700 flex items-center gap-2 disabled:opacity-60"
+                disabled={creandoMasivo}
+              >
+                <Check size={18} /> {creandoMasivo ? 'Creando...' : 'Crear turnos'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL CREAR/EDITAR (tu modal actual, sin cambios grandes) */}
       {modalAbierto && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl h-[90vh] overflow-y-auto animate-in zoom-in duration-200 flex flex-col">
@@ -564,7 +1193,15 @@ const ProgramacionExternos = () => {
               </div>
 
               <div className="bg-blue-50 p-4 rounded-lg border border-blue-100 md:col-span-2">
-                <label className="block text-xs font-bold mb-1 text-blue-700">2. EMPLEADO (Opcional - Dejar vacío para Pendiente)</label>
+                <label className="block text-xs font-bold mb-1 text-blue-700">2. EMPLEADO (Opcional)</label>
+
+                <input
+                  value={buscarEmpleado}
+                  onChange={(e) => setBuscarEmpleado(e.target.value)}
+                  placeholder="Buscar por nombre o CC..."
+                  className="w-full border rounded-lg p-2 mb-2"
+                />
+
                 {fijosDeLaSede.length > 0 && (
                   <div className="mb-3 p-2 bg-yellow-50 rounded border border-yellow-200">
                     <span className="text-xs font-bold text-yellow-700 block mb-1">⭐ Sugeridos (Fijos):</span>
@@ -581,20 +1218,24 @@ const ProgramacionExternos = () => {
                     </div>
                   </div>
                 )}
+
                 <select className="w-full border p-2 rounded mb-2 bg-white" onChange={handleEmpleadoSelect} value={formulario.empleadoId ?? ''}>
                   <option value="">-- Sin Asignar (Vacante) --</option>
-                  {listaEmpleados.map((e) => (
+                  {empleadosFiltradosParaModal.map((e) => (
                     <option key={e.id} value={e.id}>
-                      {e.nombre_completo}
+                      {e.nombre_completo} (CC: {e.documento})
                     </option>
                   ))}
                 </select>
+
+                <div className="text-[11px] text-gray-500">Tip: escribe parte del nombre o la cédula para no scrollear.</div>
               </div>
 
               <div>
                 <label className="block text-xs font-bold mb-1">Fecha</label>
                 <input type="date" className="w-full border p-2 rounded" value={formulario.fecha} onChange={(e) => calcularFecha(e.target.value)} />
               </div>
+
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="block text-xs font-bold mb-1">Inicio</label>
@@ -638,11 +1279,7 @@ const ProgramacionExternos = () => {
                 <h3 className="text-lg font-extrabold">{errorModal.titulo}</h3>
                 <p className="text-sm text-white/90 mt-1">{errorModal.mensaje}</p>
               </div>
-              <button
-                onClick={() => setErrorModal(null)}
-                className="p-2 rounded-lg hover:bg-white/10 transition"
-                aria-label="Cerrar"
-              >
+              <button onClick={() => setErrorModal(null)} className="p-2 rounded-lg hover:bg-white/10 transition" aria-label="Cerrar">
                 <X />
               </button>
             </div>
