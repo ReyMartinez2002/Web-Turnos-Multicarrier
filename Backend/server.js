@@ -129,6 +129,69 @@ app.get('/fijos/:sucursalId', (req, res) => {
         return res.json(result);
     });
 });
+// 9. Obtener Programación Semanal
+app.get('/programacion-semanal', (req, res) => {
+    const sql = `
+        SELECT p.*, 
+               e.nombre_completo as nombre_empleado,
+               c.sucursal as nombre_sucursal
+        FROM programacion_semanal p
+        JOIN empleados e ON p.empleado_id = e.id
+        JOIN clientes_sucursales c ON p.sucursal_id = c.id
+    `;
+    db.query(sql, (err, result) => {
+        if (err) return res.json(err);
+        return res.json(result);
+    });
+});
+
+// 10. Guardar o Actualizar un Turno (Celda específica)
+app.post('/programacion-semanal/actualizar', (req, res) => {
+    const { sucursalId, empleadoId, tipo, dia, valor } = req.body;
+    
+    // Usamos fecha dummy por ahora (o la fecha actual de la semana)
+    const fechaSemana = '2026-02-14'; 
+
+    // Usamos ON DUPLICATE KEY UPDATE para crear o editar en una sola consulta
+    const sql = `
+        INSERT INTO programacion_semanal (sucursal_id, empleado_id, tipo_empleado, fecha_inicio_semana, ${dia}) 
+        VALUES (?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE ${dia} = ?
+    `;
+
+    db.query(sql, [sucursalId, empleadoId, tipo, fechaSemana, valor, valor], (err, result) => {
+        if (err) {
+            console.log(err);
+            return res.status(500).json(err);
+        }
+        return res.json({ message: "Turno actualizado" });
+    });
+});
+
+// 11. Agregar Empleado a la Programación (Fila nueva vacía)
+app.post('/programacion-semanal/agregar', (req, res) => {
+    const { sucursalId, empleadoId, tipo } = req.body;
+    const fechaSemana = '2026-02-14';
+
+    const sql = `
+        INSERT INTO programacion_semanal (sucursal_id, empleado_id, tipo_empleado, fecha_inicio_semana) 
+        VALUES (?, ?, ?, ?)
+    `;
+    db.query(sql, [sucursalId, empleadoId, tipo, fechaSemana], (err, result) => {
+        if (err) return res.json(err);
+        return res.json({ message: "Empleado agregado a la tabla", id: result.insertId });
+    });
+});
+
+// 12. Eliminar fila de programación
+app.delete('/programacion-semanal/:id', (req, res) => {
+    const { id } = req.params;
+    const sql = "DELETE FROM programacion_semanal WHERE id = ?";
+    db.query(sql, [id], (err, result) => {
+        if (err) return res.json(err);
+        return res.json({ message: "Eliminado" });
+    });
+});
 
 const PORT = 3001;
 app.listen(PORT, () => {
