@@ -607,6 +607,65 @@ app.patch('/turnos-externos/:id/liberar', (req, res) => {
         return res.json({ message: "Turno liberado exitosamente" });
     });
 });
+// --- GESTIÓN DE TURNOS EXTERNOS (LO QUE FALTABA) ---
+
+// 26. EDITAR TURNO EXTERNO
+app.put('/turnos-externos/:id', (req, res) => {
+    const { id } = req.params;
+    const { 
+        empleadoId, sucursalId, fecha, horaIni, horaFin, horasTotales, 
+        estadoTurno 
+    } = req.body;
+
+    // Convertimos null o vacío a NULL de SQL
+    const empId = (empleadoId && empleadoId !== 0) ? empleadoId : null;
+    const estado = empId ? (estadoTurno || 'OK') : 'PENDIENTE';
+
+    // OJO: Aquí podrías agregar validación de cruces si la necesitas, 
+    // pero para que funcione ya mismo, actualizamos directo.
+    const sql = `
+        UPDATE turnos_externos 
+        SET empleado_id=?, sucursal_id=?, fecha=?, 
+            hora_inicio=?, hora_fin=?, horas_totales=?, estado_turno=?
+        WHERE id=?
+    `;
+    
+    db.query(sql, [empId, sucursalId, fecha, horaIni, horaFin, horasTotales, estado, id], (err, result) => {
+        if (err) {
+            console.error(err);
+            return res.status(500).json({ error: "Error al actualizar turno" });
+        }
+        return res.json({ message: "Turno actualizado correctamente" });
+    });
+});
+
+// 27. ELIMINAR TURNO EXTERNO (Borrado definitivo)
+app.delete('/turnos-externos/:id', (req, res) => {
+    const { id } = req.params;
+    db.query("DELETE FROM turnos_externos WHERE id = ?", [id], (err, result) => {
+        if (err) return res.status(500).json(err);
+        return res.json({ message: "Turno eliminado permanentemente" });
+    });
+});
+
+// 28. OBTENER CLIENTES FILTRADOS (Necesario para el filtro de PPY vs EXTERNOS)
+app.get('/clientes-filtro', (req, res) => {
+    const { tipo } = req.query;
+    let sql = "SELECT * FROM clientes_sucursales";
+    
+    if (tipo === 'PPY') {
+        sql += " WHERE empresa = 'PAN PA YA'";
+    } else if (tipo === 'EXTERNOS') {
+        sql += " WHERE empresa != 'PAN PA YA'";
+    }
+    
+    sql += " ORDER BY empresa, sucursal";
+
+    db.query(sql, (err, result) => {
+        if (err) return res.json(err);
+        return res.json(result);
+    });
+});
 
 const PORT = 3001;
 app.listen(PORT, () => {
