@@ -97,6 +97,20 @@ const DIAS: { key: DiaKey; label: string }[] = [
   { key: 'viernes', label: 'Vie' },
 ];
 
+const API = 'http://localhost:3001';
+
+function esDescansoLocal(hIni: string, hFin: string, horasTotales?: number) {
+  const ini = String(hIni ?? '').trim();
+  const fin = String(hFin ?? '').trim();
+
+  if (typeof horasTotales === 'number' && horasTotales === 0) return true;
+  if (ini.startsWith('00:00') && (!fin || fin.startsWith('00:00'))) return true;
+
+  // si el usuario deja horas en 0 sin poner 00:00, igual lo tratamos como descanso
+  // (esto es una ayuda UI, el backend es el que manda)
+  return false;
+}
+
 const ProgramacionExternos = () => {
   const [listaEmpleados, setListaEmpleados] = useState<EmpleadoBD[]>([]);
   const [listaSucursales, setListaSucursales] = useState<SucursalBD[]>([]);
@@ -138,7 +152,7 @@ const ProgramacionExternos = () => {
   const [masivoEmpleadoId, setMasivoEmpleadoId] = useState<number | null>(null);
   const [creandoMasivo, setCreandoMasivo] = useState(false);
 
-  // ✅ modal clonar
+  // modal clonar
   const [modalClonar, setModalClonar] = useState(false);
   const [clonarSucursalTerm, setClonarSucursalTerm] = useState('');
   const [clonarSucursalId, setClonarSucursalId] = useState<number | null>(null); // opcional
@@ -186,11 +200,11 @@ const ProgramacionExternos = () => {
   // --- CARGA ---
   const cargarDatosMaestros = useCallback(async () => {
     try {
-      const resEmp = await fetch('http://localhost:3001/empleados');
+      const resEmp = await fetch(`${API}/empleados`);
       const dataEmp = await resEmp.json();
       setListaEmpleados(dataEmp);
 
-      const resSuc = await fetch('http://localhost:3001/clientes-filtro?tipo=EXTERNOS');
+      const resSuc = await fetch(`${API}/clientes-filtro?tipo=EXTERNOS`);
       const dataSuc = await resSuc.json();
       setListaSucursales(dataSuc);
     } catch (error) {
@@ -205,7 +219,7 @@ const ProgramacionExternos = () => {
 
   const cargarTurnos = useCallback(async () => {
     try {
-      const res = await fetch('http://localhost:3001/turnos-externos');
+      const res = await fetch(`${API}/turnos-externos`);
       const data = await res.json();
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -377,7 +391,7 @@ const ProgramacionExternos = () => {
       }));
 
       try {
-        const res = await fetch(`http://localhost:3001/fijos/${suc.id}`);
+        const res = await fetch(`${API}/fijos/${suc.id}`);
         const dataFijos = await res.json();
         setFijosDeLaSede(dataFijos);
       } catch (error) {
@@ -392,7 +406,7 @@ const ProgramacionExternos = () => {
     setIsEditing(true);
 
     if (turno.sucursalId) {
-      fetch(`http://localhost:3001/fijos/${turno.sucursalId}`)
+      fetch(`${API}/fijos/${turno.sucursalId}`)
         .then((res) => res.json())
         .then((data) => setFijosDeLaSede(data))
         .catch((err) => console.error(err));
@@ -404,8 +418,15 @@ const ProgramacionExternos = () => {
   const eliminarTurno = async (id: number) => {
     if (!window.confirm('¿Seguro de eliminar este turno POR COMPLETO?')) return;
     try {
-      const res = await fetch(`http://localhost:3001/turnos-externos/${id}`, { method: 'DELETE' });
+      const res = await fetch(`${API}/turnos-externos/${id}`, { method: 'DELETE' });
       if (res.ok) cargarTurnos();
+      else {
+        setErrorModal({
+          titulo: 'No se pudo eliminar',
+          mensaje: `Error HTTP ${res.status}`,
+          campos: [],
+        });
+      }
     } catch (error) {
       console.error(error);
     }
@@ -414,7 +435,7 @@ const ProgramacionExternos = () => {
   const liberarTurno = async (id: number) => {
     if (!window.confirm('¿Quitar al empleado de este turno? (Quedará Vacante)')) return;
     try {
-      const res = await fetch(`http://localhost:3001/turnos-externos/${id}/liberar`, { method: 'PATCH' });
+      const res = await fetch(`${API}/turnos-externos/${id}/liberar`, { method: 'PATCH' });
       if (res.ok) cargarTurnos();
       else {
         setErrorModal({
@@ -433,7 +454,9 @@ const ProgramacionExternos = () => {
     }
   };
 
+  // ✅ Guardar con validaciones (usa códigos del backend)
   const guardarTurnoBD = async () => {
+    // Validación mínima UI (backend manda)
     if (formulario.sucursalId === 0 || !formulario.fecha) {
       setErrorModal({
         titulo: 'Faltan datos',
@@ -443,8 +466,14 @@ const ProgramacionExternos = () => {
       return;
     }
 
+    // Si es "descanso", por UI exigimos 00:00 / 0h para no confundir
+    const esDescansoUI = esDescansoLocal(formulario.horaIni, formulario.horaFin, formulario.horasTotales);
+    if (esDescansoUI) {
+      // opcional: podrías forzar a 00:00-00:00 aquí si quieres
+    }
+
     try {
-      const url = isEditing ? `http://localhost:3001/turnos-externos/${formulario.id}` : 'http://localhost:3001/turnos-externos';
+      const url = isEditing ? `${API}/turnos-externos/${formulario.id}` : `${API}/turnos-externos`;
       const method = isEditing ? 'PUT' : 'POST';
 
       const response = await fetch(url, {
@@ -461,10 +490,11 @@ const ProgramacionExternos = () => {
 
       const errData = await response.json().catch(() => null);
 
+      // ✅ 1) Cruce PPY (turno con rango)
       if (response.status === 409 && errData?.code === 'CRUCE_PPY' && errData?.detalle) {
         const d = errData.detalle;
         setErrorModal({
-          titulo: 'Cruce de turnos detectado',
+          titulo: 'Cruce de turnos detectado (PPY)',
           mensaje: errData.message || 'El empleado ya tiene un turno asignado en otra sede (PPY).',
           campos: [
             { label: 'Sucursal (PPY)', value: String(d.sucursal ?? '-') },
@@ -478,6 +508,36 @@ const ProgramacionExternos = () => {
         return;
       }
 
+      // ✅ 2) Turno vs Descanso el mismo día
+      if (response.status === 409 && errData?.code === 'TURNO_DESCANSO_MISMO_DIA') {
+        setErrorModal({
+          titulo: 'Validación: Turno vs Descanso',
+          mensaje: errData.message || 'No se puede tener TURNO y DESCANSO el mismo día para el mismo empleado.',
+          campos: [
+            { label: 'Empleado', value: String(formulario.nombre ?? 'Vacante') },
+            { label: 'CC', value: String(formulario.cc ?? '-') },
+            { label: 'Fecha', value: String(formulario.fecha ?? '-') },
+            { label: 'Sucursal', value: String(formulario.sucursal ?? '-') },
+            {
+              label: 'Horario',
+              value: `${String(formulario.horaIni ?? '')} - ${String(formulario.horaFin ?? '')}`.trim(),
+            },
+          ],
+        });
+        return;
+      }
+
+      // ✅ 3) Validación import/masivo u otras validaciones
+      if (response.status === 409 && errData?.code === 'IMPORT_VALIDATION') {
+        setErrorModal({
+          titulo: 'Validación de importación',
+          mensaje: errData.message || 'Hay inconsistencias en el archivo (turno y descanso el mismo día).',
+          campos: [],
+        });
+        return;
+      }
+
+      // ✅ 4) Error genérico
       setErrorModal({
         titulo: 'No se pudo guardar',
         mensaje: errData?.message || errData?.mensaje || errData?.error || `Error HTTP ${response.status}`,
@@ -487,7 +547,7 @@ const ProgramacionExternos = () => {
       console.error(error);
       setErrorModal({
         titulo: 'Error de conexión',
-        mensaje: 'No se pudo contactar el servidor. Revisa que el backend esté corriendo en http://localhost:3001',
+        mensaje: `No se pudo contactar el servidor. Revisa que el backend esté corriendo en ${API}`,
         campos: [],
       });
     }
@@ -589,7 +649,7 @@ const ProgramacionExternos = () => {
         return;
       }
 
-      const res = await fetch('http://localhost:3001/turnos-externos/importar', {
+      const res = await fetch(`${API}/turnos-externos/importar`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ turnos: turnosImport }),
@@ -597,18 +657,33 @@ const ProgramacionExternos = () => {
 
       const data = (await res.json().catch(() => null)) as
         | { message?: string; resumen?: { insertados?: number; ppyMarcados?: number } }
+        | { code?: string; errores?: unknown[]; message?: string }
         | null;
 
       if (!res.ok) {
+        // si backend devuelve errores detallados
+        if (res.status === 409 && (data as any)?.code === 'IMPORT_VALIDATION') {
+          setErrorModal({
+            titulo: 'Validación de importación',
+            mensaje: (data as any)?.message || 'El archivo trae inconsistencias (turno y descanso el mismo día).',
+            campos: [],
+          });
+          return;
+        }
+
         setErrorModal({
           titulo: 'Error importando',
-          mensaje: data?.message || `Error HTTP ${res.status}`,
+          mensaje: (data as any)?.message || `Error HTTP ${res.status}`,
           campos: [],
         });
         return;
       }
 
-      alert(`Importación completa:\nInsertados: ${data?.resumen?.insertados ?? '-'}\nPPY marcados: ${data?.resumen?.ppyMarcados ?? '-'}`);
+      alert(
+        `Importación completa:\nInsertados: ${(data as any)?.resumen?.insertados ?? '-'}\nPPY marcados: ${
+          (data as any)?.resumen?.ppyMarcados ?? '-'
+        }`
+      );
 
       await cargarTurnos();
     } catch (e) {
@@ -655,7 +730,9 @@ const ProgramacionExternos = () => {
   const empleadosFiltradosMasivo = useMemo(() => {
     const term = masivoEmpleadoTerm.trim().toLowerCase();
     if (!term) return listaEmpleados.slice(0, 40);
-    return listaEmpleados.filter((e) => `${e.nombre_completo} ${e.documento}`.toLowerCase().includes(term)).slice(0, 50);
+    return listaEmpleados
+      .filter((e) => `${e.nombre_completo} ${e.documento}`.toLowerCase().includes(term))
+      .slice(0, 50);
   }, [listaEmpleados, masivoEmpleadoTerm]);
 
   const sucursalesFiltradasClonar = useMemo(() => {
@@ -724,7 +801,14 @@ const ProgramacionExternos = () => {
       .filter(([, v]) => v)
       .map(([k]) => k) as DiaKey[];
 
-    if (!masivoSucursalId || !masivoFechaInicio || !masivoFechaFin || diasSeleccionados.length === 0 || !masivoHoraIni || !masivoHoraFin) {
+    if (
+      !masivoSucursalId ||
+      !masivoFechaInicio ||
+      !masivoFechaFin ||
+      diasSeleccionados.length === 0 ||
+      !masivoHoraIni ||
+      !masivoHoraFin
+    ) {
       setErrorModal({
         titulo: 'Faltan datos',
         mensaje: 'Sucursal, fecha inicio/fin, días y horas son obligatorios.',
@@ -735,7 +819,7 @@ const ProgramacionExternos = () => {
 
     setCreandoMasivo(true);
     try {
-      const res = await fetch('http://localhost:3001/turnos-externos/masivo', {
+      const res = await fetch(`${API}/turnos-externos/masivo`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -751,18 +835,23 @@ const ProgramacionExternos = () => {
 
       const data = (await res.json().catch(() => null)) as
         | { message?: string; resumen?: { insertados?: number; ppyMarcados?: number } }
+        | { code?: string; message?: string; errores?: unknown[] }
         | null;
 
       if (!res.ok) {
         setErrorModal({
           titulo: 'Error creando masivo',
-          mensaje: data?.message || `Error HTTP ${res.status}`,
+          mensaje: (data as any)?.message || `Error HTTP ${res.status}`,
           campos: [],
         });
         return;
       }
 
-      alert(`Creación masiva lista.\nInsertados: ${data?.resumen?.insertados ?? '-'}\nPPY marcados: ${data?.resumen?.ppyMarcados ?? '-'}`);
+      alert(
+        `Creación masiva lista.\nInsertados: ${(data as any)?.resumen?.insertados ?? '-'}\nPPY marcados: ${
+          (data as any)?.resumen?.ppyMarcados ?? '-'
+        }`
+      );
 
       setModalMasivo(false);
       resetMasivo();
@@ -810,7 +899,7 @@ const ProgramacionExternos = () => {
 
     setClonando(true);
     try {
-      const res = await fetch('http://localhost:3001/turnos-externos/clonar', {
+      const res = await fetch(`${API}/turnos-externos/clonar`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -835,12 +924,13 @@ const ProgramacionExternos = () => {
               ppyMarcados?: number;
             };
           }
+        | { code?: string; message?: string }
         | null;
 
       if (!res.ok) {
         setErrorModal({
           titulo: 'Error clonando',
-          mensaje: data?.message || `Error HTTP ${res.status}`,
+          mensaje: (data as any)?.message || `Error HTTP ${res.status}`,
           campos: [],
         });
         return;
@@ -848,12 +938,12 @@ const ProgramacionExternos = () => {
 
       alert(
         `Clonación lista.\n` +
-          `Origen: ${data?.resumen?.origen ?? '-'}\n` +
-          `Candidatos: ${data?.resumen?.candidatos ?? '-'}\n` +
-          `Omitidos (ya existían): ${data?.resumen?.omitidosPorDuplicado ?? '-'}\n` +
-          `Insertados: ${data?.resumen?.insertados ?? '-'}\n` +
-          `Shift(días): ${data?.resumen?.shiftDays ?? '-'}\n` +
-          `PPY marcados: ${data?.resumen?.ppyMarcados ?? '-'}`
+          `Origen: ${(data as any)?.resumen?.origen ?? '-'}\n` +
+          `Candidatos: ${(data as any)?.resumen?.candidatos ?? '-'}\n` +
+          `Omitidos (ya existían): ${(data as any)?.resumen?.omitidosPorDuplicado ?? '-'}\n` +
+          `Insertados: ${(data as any)?.resumen?.insertados ?? '-'}\n` +
+          `Shift(días): ${(data as any)?.resumen?.shiftDays ?? '-'}\n` +
+          `PPY marcados: ${(data as any)?.resumen?.ppyMarcados ?? '-'}`
       );
 
       setModalClonar(false);
@@ -895,7 +985,6 @@ const ProgramacionExternos = () => {
           <button
             onClick={() => {
               resetClonar();
-              // tip: si ya tienes un filtro de sucursal aplicado, lo pre-seleccionamos
               if (fSucursalId) {
                 const id = Number(fSucursalId);
                 const suc = listaSucursales.find((s) => s.id === id);
@@ -996,7 +1085,11 @@ const ProgramacionExternos = () => {
 
           <div className="md:col-span-2">
             <label className="block text-xs font-bold mb-1 text-gray-600">Sucursal</label>
-            <select value={fSucursalId} onChange={(e) => setFSucursalId(e.target.value)} className="w-full border rounded-lg p-2 bg-white">
+            <select
+              value={fSucursalId}
+              onChange={(e) => setFSucursalId(e.target.value)}
+              className="w-full border rounded-lg p-2 bg-white"
+            >
               <option value="">-- Todas --</option>
               {sucursalesFiltradasParaFiltro.map((s) => (
                 <option key={s.id} value={String(s.id)}>
@@ -1008,17 +1101,31 @@ const ProgramacionExternos = () => {
 
           <div>
             <label className="block text-xs font-bold mb-1 text-gray-600">Desde</label>
-            <input value={fDesde} onChange={(e) => setFDesde(e.target.value)} type="date" className="w-full border rounded-lg p-2" />
+            <input
+              value={fDesde}
+              onChange={(e) => setFDesde(e.target.value)}
+              type="date"
+              className="w-full border rounded-lg p-2"
+            />
           </div>
 
           <div>
             <label className="block text-xs font-bold mb-1 text-gray-600">Hasta</label>
-            <input value={fHasta} onChange={(e) => setFHasta(e.target.value)} type="date" className="w-full border rounded-lg p-2" />
+            <input
+              value={fHasta}
+              onChange={(e) => setFHasta(e.target.value)}
+              type="date"
+              className="w-full border rounded-lg p-2"
+            />
           </div>
 
           <div className="flex items-end gap-3">
             <label className="flex items-center gap-2 text-sm font-semibold text-gray-700">
-              <input type="checkbox" checked={fVacantes} onChange={(e) => setFVacantes(e.target.checked)} />
+              <input
+                type="checkbox"
+                checked={fVacantes}
+                onChange={(e) => setFVacantes(e.target.checked)}
+              />
               Solo vacantes
             </label>
           </div>
@@ -1093,7 +1200,9 @@ const ProgramacionExternos = () => {
                   <td className="p-3 text-center">
                     <span
                       className={`px-2 py-1 rounded-full text-xs font-bold border ${
-                        t.nombre ? 'bg-green-100 text-green-700 border-green-200' : 'bg-orange-100 text-orange-600 border-orange-200'
+                        t.nombre
+                          ? 'bg-green-100 text-green-700 border-green-200'
+                          : 'bg-orange-100 text-orange-600 border-orange-200'
                       }`}
                     >
                       {t.nombre ? t.estadoTurno : 'PENDIENTE'}
@@ -1166,10 +1275,14 @@ const ProgramacionExternos = () => {
                       setClonarSucursalId(null);
                       setClonarSucursalTerm('');
                     }}
-                    className={`w-full text-left px-3 py-2 hover:bg-slate-50 transition ${clonarSucursalId === null ? 'bg-slate-50' : ''}`}
+                    className={`w-full text-left px-3 py-2 hover:bg-slate-50 transition ${
+                      clonarSucursalId === null ? 'bg-slate-50' : ''
+                    }`}
                   >
                     <div className="font-bold text-sm text-slate-800">Todas las sucursales</div>
-                    <div className="text-xs text-gray-600">Clona lo que exista en el rango origen (todas las sedes).</div>
+                    <div className="text-xs text-gray-600">
+                      Clona lo que exista en el rango origen (todas las sedes).
+                    </div>
                   </button>
 
                   {sucursalesFiltradasClonar.map((s) => (
@@ -1179,7 +1292,9 @@ const ProgramacionExternos = () => {
                         setClonarSucursalId(s.id);
                         setClonarSucursalTerm(`${s.empresa} - ${s.sucursal} (ID ${s.id})`);
                       }}
-                      className={`w-full text-left px-3 py-2 hover:bg-indigo-50 transition ${clonarSucursalId === s.id ? 'bg-indigo-100' : ''}`}
+                      className={`w-full text-left px-3 py-2 hover:bg-indigo-50 transition ${
+                        clonarSucursalId === s.id ? 'bg-indigo-100' : ''
+                      }`}
                     >
                       <div className="font-bold text-sm text-gray-800">{s.empresa}</div>
                       <div className="text-xs text-gray-600">
@@ -1196,39 +1311,71 @@ const ProgramacionExternos = () => {
 
               <div>
                 <label className="block text-xs font-bold mb-1 text-gray-700">Origen: Fecha inicio</label>
-                <input value={clonarOrigenIni} onChange={(e) => setClonarOrigenIni(e.target.value)} type="date" className="w-full border rounded-xl p-3" />
+                <input
+                  value={clonarOrigenIni}
+                  onChange={(e) => setClonarOrigenIni(e.target.value)}
+                  type="date"
+                  className="w-full border rounded-xl p-3"
+                />
               </div>
 
               <div>
                 <label className="block text-xs font-bold mb-1 text-gray-700">Origen: Fecha fin</label>
-                <input value={clonarOrigenFin} onChange={(e) => setClonarOrigenFin(e.target.value)} type="date" className="w-full border rounded-xl p-3" />
+                <input
+                  value={clonarOrigenFin}
+                  onChange={(e) => setClonarOrigenFin(e.target.value)}
+                  type="date"
+                  className="w-full border rounded-xl p-3"
+                />
               </div>
 
               <div className="md:col-span-2">
                 <label className="block text-xs font-bold mb-1 text-gray-700">Destino: Nueva fecha inicio</label>
-                <input value={clonarDestinoIni} onChange={(e) => setClonarDestinoIni(e.target.value)} type="date" className="w-full border rounded-xl p-3" />
+                <input
+                  value={clonarDestinoIni}
+                  onChange={(e) => setClonarDestinoIni(e.target.value)}
+                  type="date"
+                  className="w-full border rounded-xl p-3"
+                />
                 <div className="text-[11px] text-gray-500 mt-1">
-                  Se clona moviendo el rango origen por la diferencia de días (shift). Si ya existe un turno igual en destino, se omite.
+                  Se clona moviendo el rango origen por la diferencia de días (shift). Si ya existe un turno igual en
+                  destino, se omite.
                 </div>
               </div>
 
               <div className="md:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <label className="flex items-center gap-2 text-sm font-semibold text-gray-700 bg-gray-50 border rounded-xl p-3">
-                  <input type="checkbox" checked={clonarIncluirAsignados} onChange={(e) => setClonarIncluirAsignados(e.target.checked)} />
+                  <input
+                    type="checkbox"
+                    checked={clonarIncluirAsignados}
+                    onChange={(e) => setClonarIncluirAsignados(e.target.checked)}
+                  />
                   Incluir asignados
                 </label>
                 <label className="flex items-center gap-2 text-sm font-semibold text-gray-700 bg-gray-50 border rounded-xl p-3">
-                  <input type="checkbox" checked={clonarIncluirVacantes} onChange={(e) => setClonarIncluirVacantes(e.target.checked)} />
+                  <input
+                    type="checkbox"
+                    checked={clonarIncluirVacantes}
+                    onChange={(e) => setClonarIncluirVacantes(e.target.checked)}
+                  />
                   Incluir vacantes
                 </label>
               </div>
             </div>
 
             <div className="p-4 border-t bg-gray-50 flex justify-end gap-3">
-              <button onClick={() => setModalClonar(false)} className="px-4 py-2 text-gray-700 font-semibold hover:bg-gray-200 rounded-xl" disabled={clonando}>
+              <button
+                onClick={() => setModalClonar(false)}
+                className="px-4 py-2 text-gray-700 font-semibold hover:bg-gray-200 rounded-xl"
+                disabled={clonando}
+              >
                 Cancelar
               </button>
-              <button onClick={clonarTurnos} className="px-6 py-2 bg-indigo-600 text-white font-extrabold rounded-xl hover:bg-indigo-700 flex items-center gap-2 disabled:opacity-60" disabled={clonando}>
+              <button
+                onClick={clonarTurnos}
+                className="px-6 py-2 bg-indigo-600 text-white font-extrabold rounded-xl hover:bg-indigo-700 flex items-center gap-2 disabled:opacity-60"
+                disabled={clonando}
+              >
                 <Check size={18} /> {clonando ? 'Clonando...' : 'Clonar'}
               </button>
             </div>
@@ -1269,7 +1416,9 @@ const ProgramacionExternos = () => {
                         setMasivoSucursalId(s.id);
                         setMasivoSucursalTerm(`${s.empresa} - ${s.sucursal} (ID ${s.id})`);
                       }}
-                      className={`w-full text-left px-3 py-2 hover:bg-indigo-50 transition ${masivoSucursalId === s.id ? 'bg-indigo-100' : ''}`}
+                      className={`w-full text-left px-3 py-2 hover:bg-indigo-50 transition ${
+                        masivoSucursalId === s.id ? 'bg-indigo-100' : ''
+                      }`}
                     >
                       <div className="font-bold text-sm text-gray-800">{s.empresa}</div>
                       <div className="text-xs text-gray-600">
@@ -1277,18 +1426,30 @@ const ProgramacionExternos = () => {
                       </div>
                     </button>
                   ))}
-                  {sucursalesFiltradasMasivo.length === 0 && <div className="p-3 text-sm text-gray-500">No hay coincidencias.</div>}
+                  {sucursalesFiltradasMasivo.length === 0 && (
+                    <div className="p-3 text-sm text-gray-500">No hay coincidencias.</div>
+                  )}
                 </div>
               </div>
 
               <div>
                 <label className="block text-xs font-bold mb-1 text-gray-700">Fecha inicio</label>
-                <input value={masivoFechaInicio} onChange={(e) => setMasivoFechaInicio(e.target.value)} type="date" className="w-full border rounded-xl p-3" />
+                <input
+                  value={masivoFechaInicio}
+                  onChange={(e) => setMasivoFechaInicio(e.target.value)}
+                  type="date"
+                  className="w-full border rounded-xl p-3"
+                />
               </div>
 
               <div>
                 <label className="block text-xs font-bold mb-1 text-gray-700">Fecha fin</label>
-                <input value={masivoFechaFin} onChange={(e) => setMasivoFechaFin(e.target.value)} type="date" className="w-full border rounded-xl p-3" />
+                <input
+                  value={masivoFechaFin}
+                  onChange={(e) => setMasivoFechaFin(e.target.value)}
+                  type="date"
+                  className="w-full border rounded-xl p-3"
+                />
               </div>
 
               <div className="md:col-span-2">
@@ -1299,7 +1460,9 @@ const ProgramacionExternos = () => {
                       key={d.key}
                       onClick={() => toggleMasivoDia(d.key)}
                       className={`px-3 py-2 rounded-full text-sm font-bold border transition ${
-                        masivoDias[d.key] ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-800 border-gray-300 hover:bg-gray-50'
+                        masivoDias[d.key]
+                          ? 'bg-slate-900 text-white border-slate-900'
+                          : 'bg-white text-slate-800 border-gray-300 hover:bg-gray-50'
                       }`}
                     >
                       {d.label}
@@ -1310,15 +1473,27 @@ const ProgramacionExternos = () => {
 
               <div>
                 <label className="block text-xs font-bold mb-1 text-gray-700">Hora inicio</label>
-                <input value={masivoHoraIni} onChange={(e) => setMasivoHoraIni(e.target.value)} type="time" className="w-full border rounded-xl p-3" />
+                <input
+                  value={masivoHoraIni}
+                  onChange={(e) => setMasivoHoraIni(e.target.value)}
+                  type="time"
+                  className="w-full border rounded-xl p-3"
+                />
               </div>
               <div>
                 <label className="block text-xs font-bold mb-1 text-gray-700">Hora fin</label>
-                <input value={masivoHoraFin} onChange={(e) => setMasivoHoraFin(e.target.value)} type="time" className="w-full border rounded-xl p-3" />
+                <input
+                  value={masivoHoraFin}
+                  onChange={(e) => setMasivoHoraFin(e.target.value)}
+                  type="time"
+                  className="w-full border rounded-xl p-3"
+                />
               </div>
 
               <div className="md:col-span-2">
-                <label className="block text-xs font-bold mb-1 text-gray-700">Empleado (opcional) — si lo dejas vacío quedan VACANTES</label>
+                <label className="block text-xs font-bold mb-1 text-gray-700">
+                  Empleado (opcional) — si lo dejas vacío quedan VACANTES
+                </label>
                 <input
                   value={masivoEmpleadoTerm}
                   onChange={(e) => {
@@ -1334,7 +1509,9 @@ const ProgramacionExternos = () => {
                       setMasivoEmpleadoId(null);
                       setMasivoEmpleadoTerm('');
                     }}
-                    className={`w-full text-left px-3 py-2 hover:bg-orange-50 transition ${masivoEmpleadoId === null ? 'bg-orange-50' : ''}`}
+                    className={`w-full text-left px-3 py-2 hover:bg-orange-50 transition ${
+                      masivoEmpleadoId === null ? 'bg-orange-50' : ''
+                    }`}
                   >
                     <div className="font-bold text-sm text-orange-700">Vacante (sin asignar)</div>
                     <div className="text-xs text-gray-600">Se crean los turnos y luego asignas.</div>
@@ -1347,22 +1524,36 @@ const ProgramacionExternos = () => {
                         setMasivoEmpleadoId(e.id);
                         setMasivoEmpleadoTerm(`${e.nombre_completo} (CC ${e.documento})`);
                       }}
-                      className={`w-full text-left px-3 py-2 hover:bg-indigo-50 transition ${masivoEmpleadoId === e.id ? 'bg-indigo-100' : ''}`}
+                      className={`w-full text-left px-3 py-2 hover:bg-indigo-50 transition ${
+                        masivoEmpleadoId === e.id ? 'bg-indigo-100' : ''
+                      }`}
                     >
                       <div className="font-bold text-sm text-gray-800">{e.nombre_completo}</div>
-                      <div className="text-xs text-gray-600">CC: {e.documento} — {e.cargo}</div>
+                      <div className="text-xs text-gray-600">
+                        CC: {e.documento} — {e.cargo}
+                      </div>
                     </button>
                   ))}
-                  {empleadosFiltradosMasivo.length === 0 && <div className="p-3 text-sm text-gray-500">No hay coincidencias.</div>}
+                  {empleadosFiltradosMasivo.length === 0 && (
+                    <div className="p-3 text-sm text-gray-500">No hay coincidencias.</div>
+                  )}
                 </div>
               </div>
             </div>
 
             <div className="p-4 border-t bg-gray-50 flex justify-end gap-3">
-              <button onClick={() => setModalMasivo(false)} className="px-4 py-2 text-gray-700 font-semibold hover:bg-gray-200 rounded-xl" disabled={creandoMasivo}>
+              <button
+                onClick={() => setModalMasivo(false)}
+                className="px-4 py-2 text-gray-700 font-semibold hover:bg-gray-200 rounded-xl"
+                disabled={creandoMasivo}
+              >
                 Cancelar
               </button>
-              <button onClick={crearMasivo} className="px-6 py-2 bg-green-600 text-white font-extrabold rounded-xl hover:bg-green-700 flex items-center gap-2 disabled:opacity-60" disabled={creandoMasivo}>
+              <button
+                onClick={crearMasivo}
+                className="px-6 py-2 bg-green-600 text-white font-extrabold rounded-xl hover:bg-green-700 flex items-center gap-2 disabled:opacity-60"
+                disabled={creandoMasivo}
+              >
                 <Check size={18} /> {creandoMasivo ? 'Creando...' : 'Crear turnos'}
               </button>
             </div>
@@ -1370,7 +1561,7 @@ const ProgramacionExternos = () => {
         </div>
       )}
 
-      {/* MODAL CREAR/EDITAR (sin cambios) */}
+      {/* MODAL CREAR/EDITAR (sin cambios de UI, solo usa guardarTurnoBD actualizado) */}
       {modalAbierto && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl h-[90vh] overflow-y-auto animate-in zoom-in duration-200 flex flex-col">
@@ -1386,7 +1577,11 @@ const ProgramacionExternos = () => {
             <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-6 flex-1">
               <div className="bg-indigo-50 p-4 rounded-lg border border-indigo-100 md:col-span-2">
                 <label className="block text-xs font-bold mb-1 text-indigo-700">1. SUCURSAL / CLIENTE</label>
-                <select className="w-full border p-2 rounded mb-2 bg-white" onChange={handleSucursalSelect} value={formulario.sucursalId || ''}>
+                <select
+                  className="w-full border p-2 rounded mb-2 bg-white"
+                  onChange={handleSucursalSelect}
+                  value={formulario.sucursalId || ''}
+                >
                   <option value="">-- Seleccionar --</option>
                   {listaSucursales.map((s) => (
                     <option key={s.id} value={s.id}>
@@ -1399,14 +1594,23 @@ const ProgramacionExternos = () => {
               <div className="bg-blue-50 p-4 rounded-lg border border-blue-100 md:col-span-2">
                 <label className="block text-xs font-bold mb-1 text-blue-700">2. EMPLEADO (Opcional)</label>
 
-                <input value={buscarEmpleado} onChange={(e) => setBuscarEmpleado(e.target.value)} placeholder="Buscar por nombre o CC..." className="w-full border rounded-lg p-2 mb-2" />
+                <input
+                  value={buscarEmpleado}
+                  onChange={(e) => setBuscarEmpleado(e.target.value)}
+                  placeholder="Buscar por nombre o CC..."
+                  className="w-full border rounded-lg p-2 mb-2"
+                />
 
                 {fijosDeLaSede.length > 0 && (
                   <div className="mb-3 p-2 bg-yellow-50 rounded border border-yellow-200">
                     <span className="text-xs font-bold text-yellow-700 block mb-1">⭐ Sugeridos (Fijos):</span>
                     <div className="flex gap-2 flex-wrap">
                       {fijosDeLaSede.map((f) => (
-                        <button key={f.id} onClick={(e) => handleEmpleadoSelect(e, f.id)} className="text-xs bg-white border border-yellow-300 px-2 py-1 rounded hover:bg-yellow-100">
+                        <button
+                          key={f.id}
+                          onClick={(e) => handleEmpleadoSelect(e, f.id)}
+                          className="text-xs bg-white border border-yellow-300 px-2 py-1 rounded hover:bg-yellow-100"
+                        >
                           {f.nombre_completo}
                         </button>
                       ))}
@@ -1414,7 +1618,11 @@ const ProgramacionExternos = () => {
                   </div>
                 )}
 
-                <select className="w-full border p-2 rounded mb-2 bg-white" onChange={handleEmpleadoSelect} value={formulario.empleadoId ?? ''}>
+                <select
+                  className="w-full border p-2 rounded mb-2 bg-white"
+                  onChange={handleEmpleadoSelect}
+                  value={formulario.empleadoId ?? ''}
+                >
                   <option value="">-- Sin Asignar (Vacante) --</option>
                   {empleadosFiltradosParaModal.map((e) => (
                     <option key={e.id} value={e.id}>
@@ -1423,31 +1631,54 @@ const ProgramacionExternos = () => {
                   ))}
                 </select>
 
-                <div className="text-[11px] text-gray-500">Tip: escribe parte del nombre o la cédula para no scrollear.</div>
+                <div className="text-[11px] text-gray-500">
+                  Tip: escribe parte del nombre o la cédula para no scrollear.
+                </div>
               </div>
 
               <div>
                 <label className="block text-xs font-bold mb-1">Fecha</label>
-                <input type="date" className="w-full border p-2 rounded" value={formulario.fecha} onChange={(e) => calcularFecha(e.target.value)} />
+                <input
+                  type="date"
+                  className="w-full border p-2 rounded"
+                  value={formulario.fecha}
+                  onChange={(e) => calcularFecha(e.target.value)}
+                />
               </div>
 
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="block text-xs font-bold mb-1">Inicio</label>
-                  <input type="time" className="w-full border p-2 rounded" value={formulario.horaIni} onChange={(e) => actualizarHoras(e.target.value, formulario.horaFin)} />
+                  <input
+                    type="time"
+                    className="w-full border p-2 rounded"
+                    value={formulario.horaIni}
+                    onChange={(e) => actualizarHoras(e.target.value, formulario.horaFin)}
+                  />
                 </div>
                 <div>
                   <label className="block text-xs font-bold mb-1">Fin</label>
-                  <input type="time" className="w-full border p-2 rounded" value={formulario.horaFin} onChange={(e) => actualizarHoras(formulario.horaIni, e.target.value)} />
+                  <input
+                    type="time"
+                    className="w-full border p-2 rounded"
+                    value={formulario.horaFin}
+                    onChange={(e) => actualizarHoras(formulario.horaIni, e.target.value)}
+                  />
                 </div>
               </div>
             </div>
 
             <div className="p-4 border-t flex justify-end gap-3 sticky bottom-0 bg-gray-50 z-10">
-              <button onClick={() => setModalAbierto(false)} className="px-4 py-2 text-gray-600 font-medium hover:bg-gray-200 rounded">
+              <button
+                onClick={() => setModalAbierto(false)}
+                className="px-4 py-2 text-gray-600 font-medium hover:bg-gray-200 rounded"
+              >
                 Cancelar
               </button>
-              <button onClick={guardarTurnoBD} className="px-6 py-2 bg-green-600 text-white font-bold rounded hover:bg-green-700 flex items-center gap-2">
+              <button
+                onClick={guardarTurnoBD}
+                className="px-6 py-2 bg-green-600 text-white font-bold rounded hover:bg-green-700 flex items-center gap-2"
+              >
                 <Check size={18} /> {isEditing ? 'ACTUALIZAR' : 'GUARDAR'}
               </button>
             </div>
@@ -1464,7 +1695,11 @@ const ProgramacionExternos = () => {
                 <h3 className="text-lg font-extrabold">{errorModal.titulo}</h3>
                 <p className="text-sm text-white/90 mt-1">{errorModal.mensaje}</p>
               </div>
-              <button onClick={() => setErrorModal(null)} className="p-2 rounded-lg hover:bg-white/10 transition" aria-label="Cerrar">
+              <button
+                onClick={() => setErrorModal(null)}
+                className="p-2 rounded-lg hover:bg-white/10 transition"
+                aria-label="Cerrar"
+              >
                 <X />
               </button>
             </div>
@@ -1483,7 +1718,10 @@ const ProgramacionExternos = () => {
             )}
 
             <div className="flex items-center justify-end gap-2 p-4 border-t bg-gray-50">
-              <button onClick={() => setErrorModal(null)} className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 font-semibold hover:bg-gray-200 transition">
+              <button
+                onClick={() => setErrorModal(null)}
+                className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 font-semibold hover:bg-gray-200 transition"
+              >
                 Cerrar
               </button>
             </div>
