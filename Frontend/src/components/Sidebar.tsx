@@ -1,5 +1,5 @@
 import React from 'react';
-import { Users, Calendar, Settings, LogOut, Briefcase, ClipboardList } from 'lucide-react'; // <--- Agrega ClipboardList
+import { Users, Calendar, Settings, LogOut, Briefcase, ClipboardList, LayoutDashboard } from 'lucide-react';
 
 interface SidebarProps {
   setVista: (vista: string) => void;
@@ -25,37 +25,44 @@ const Sidebar: React.FC<SidebarProps> = ({ setVista, vistaActual }) => {
       </div>
 
       <nav className="flex-1 p-4 space-y-2 mt-2">
-        <SidebarItem 
-          icon={<Calendar size={20} />} 
-          text="Programación Turnos" 
-          active={vistaActual === 'turnos'} 
+        <SidebarItem
+          icon={<Calendar size={20} />}
+          text="Programación Turnos"
+          active={vistaActual === 'turnos'}
           onClick={() => setVista('turnos')}
         />
-        
-        <SidebarItem 
-          icon={<Users size={20} />} 
-          text="Base de Personal" 
-          active={vistaActual === 'empleados'} 
+
+        <SidebarItem
+          icon={<Users size={20} />}
+          text="Base de Personal"
+          active={vistaActual === 'empleados'}
           onClick={() => setVista('empleados')}
         />
 
-        <SidebarItem 
-          icon={<Briefcase size={20} />} 
-          text="Clientes Externos" 
-          active={vistaActual === 'clientes'} 
+        <SidebarItem
+          icon={<Briefcase size={20} />}
+          text="Clientes Externos"
+          active={vistaActual === 'clientes'}
           onClick={() => setVista('clientes')}
         />
-        
-        {/* --- NUEVO BOTÓN --- */}
-        <SidebarItem 
-          icon={<ClipboardList size={20} />} 
-          text="Programación Externos" 
-          active={vistaActual === 'externos'} 
+
+        <SidebarItem
+          icon={<ClipboardList size={20} />}
+          text="Programación Externos"
+          active={vistaActual === 'externos'}
           onClick={() => setVista('externos')}
         />
 
+        {/* ✅ NUEVO: Dashboard Cobertura */}
+        <SidebarItem
+          icon={<LayoutDashboard size={20} />}
+          text="Dashboard Cobertura"
+          active={vistaActual === 'dashboard'}
+          onClick={() => setVista('dashboard')}
+        />
+
         <div className="pt-4 mt-4 border-t border-gray-100">
-           <SidebarItem icon={<Settings size={20} />} text="Configuración" />
+          <SidebarItem icon={<Settings size={20} />} text="Configuración" />
         </div>
       </nav>
 
@@ -70,16 +77,13 @@ const Sidebar: React.FC<SidebarProps> = ({ setVista, vistaActual }) => {
 };
 
 const SidebarItem: React.FC<SidebarItemProps> = ({ icon, text, active = false, onClick }) => (
-  <div 
+  <div
     onClick={onClick}
     className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-all duration-200 group ${
-      active 
-        ? 'bg-indigo-50 text-indigo-700 shadow-sm border border-indigo-100' 
-        : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'
-    }`}>
-    <span className={`${active ? 'text-indigo-600' : 'text-gray-400 group-hover:text-gray-600'}`}>
-      {icon}
-    </span>
+      active ? 'bg-indigo-50 text-indigo-700 shadow-sm border border-indigo-100' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'
+    }`}
+  >
+    <span className={`${active ? 'text-indigo-600' : 'text-gray-400 group-hover:text-gray-600'}`}>{icon}</span>
     <span className="font-medium text-sm">{text}</span>
   </div>
 );
