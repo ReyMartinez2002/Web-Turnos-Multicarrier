@@ -171,6 +171,70 @@ function autoMarcarPPYPorExterno({ empleadoId, fechaISO, textoPPY = '5PM' }, cb)
 }
 
 // =========================
+// ✅ VALIDACIÓN NUEVA: TURNO vs DESCANSO (EXTERNOS)
+// (PÉGALA AQUÍ, antes de las rutas, para usarla en POST/PUT/masivo/importar/clonar)
+// =========================
+function esDescansoExternoPayload(data) {
+  const hIni = String(data?.horaIni ?? '').trim();
+  const hFin = String(data?.horaFin ?? '').trim();
+
+  const horas =
+    typeof data?.horasTotales === 'number'
+      ? data.horasTotales
+      : calcularHorasTotales(hIni, hFin);
+
+  // 0 horas o 00:00 => descanso
+  if (horas === 0) return true;
+  if (hIni.startsWith('00:00') && (!hFin || hFin.startsWith('00:00'))) return true;
+
+  // Por si algún día envías un texto
+  const txt = (x) => String(x ?? '').toUpperCase().trim();
+  if (txt(data?.asignacion).includes('DESC')) return true;
+  if (txt(data?.tipoTurno).includes('DESC')) return true;
+  if (txt(data?.franjaHoraria).includes('DESC')) return true;
+
+  return false;
+}
+
+function validarNoTurnoYDescansoMismoDia({ empleadoId, fechaISO, esDescansoNuevo, excludeId }, cb) {
+  if (!empleadoId || !fechaISO) return cb(null, true);
+
+  const sql = `
+    SELECT id, hora_inicio, hora_fin, horas_totales
+    FROM turnos_externos
+    WHERE empleado_id = ?
+      AND fecha = ?
+      ${excludeId ? 'AND id <> ?' : ''}
+  `;
+  const params = excludeId ? [empleadoId, fechaISO, excludeId] : [empleadoId, fechaISO];
+
+  db.query(sql, params, (err, rows) => {
+    if (err) return cb(err);
+
+    let existeDescanso = false;
+    let existeTurno = false;
+
+    for (const r of rows) {
+      const h = typeof r.horas_totales === 'number' ? r.horas_totales : null;
+      const hIni = String(r.hora_inicio ?? '').trim();
+      const hFin = String(r.hora_fin ?? '').trim();
+
+      const esDescExistente =
+        (h !== null && h === 0) ||
+        (hIni.startsWith('00:00') && (!hFin || hFin.startsWith('00:00')));
+
+      if (esDescExistente) existeDescanso = true;
+      else existeTurno = true;
+    }
+
+    if (esDescansoNuevo && existeTurno) return cb(null, false);
+    if (!esDescansoNuevo && existeDescanso) return cb(null, false);
+
+    return cb(null, true);
+  });
+}
+
+// =========================
 // RUTAS: EMPLEADOS
 // =========================
 app.get('/empleados', (req, res) => {
@@ -418,137 +482,379 @@ const insertarTurnoExterno = (req, res) => {
   db.query(sql, valores, (err, result) => {
     if (err) return res.status(500).json(err);
 
+    // ✅ si quieres, aquí podemos evitar auto-marca en descansos (cuando ya metas desc)
     if (data.empleadoId) {
-      return autoMarcarPPYPorExterno({ empleadoId: data.empleadoId, fechaISO: data.fecha, textoPPY: '5PM' }, (errAuto) => {
-        if (errAuto) console.error('Auto-marca PPY falló:', errAuto);
-        return res.json({ message: 'Turno creado', id: result.insertId });
-      });
+      return autoMarcarPPYPorExterno(
+        { empleadoId: data.empleadoId, fechaISO: data.fecha, textoPPY: '5PM' },
+        (errAuto) => {
+          if (errAuto) console.error('Auto-marca PPY falló:', errAuto);
+          return res.json({ message: 'Turno creado', id: result.insertId });
+        }
+      );
     }
 
     return res.json({ message: 'Turno creado', id: result.insertId });
   });
 };
 
-// POST (con cruces)
+// POST (con cruces) ✅ parcheado con TURNO vs DESCANSO
 app.post('/turnos-externos', (req, res) => {
   const data = req.body;
 
   if (!data.empleadoId) return insertarTurnoExterno(req, res);
 
-  const inicioNuevo = horaADecimal(data.horaIni);
-  const finNuevo = horaADecimal(data.horaFin);
+  const fechaISO = String(data.fecha ?? '').split('T')[0];
+  const esDescansoNuevo = esDescansoExternoPayload(data);
 
-  // Cruce con EXTERNOS
-  const sqlExt = `
-    SELECT t.*, c.empresa
-    FROM turnos_externos t
-    JOIN clientes_sucursales c ON t.sucursal_id = c.id
-    WHERE t.empleado_id = ? AND t.fecha = ?
-  `;
+  // ✅ 0) Exclusividad descanso/turno en el mismo día
+  validarNoTurnoYDescansoMismoDia(
+    { empleadoId: data.empleadoId, fechaISO, esDescansoNuevo, excludeId: null },
+    (errVal, ok) => {
+      if (errVal) return res.status(500).json(errVal);
 
-  db.query(sqlExt, [data.empleadoId, data.fecha], (err, turnosExistentes) => {
-    if (err) return res.status(500).json(err);
-
-    for (const t of turnosExistentes) {
-      if (verificarCruce(inicioNuevo, finNuevo, horaADecimal(t.hora_inicio), horaADecimal(t.hora_fin))) {
-        return res.status(409).json({ message: `¡Cruce! Ya tiene turno en ${t.empresa} (${t.hora_inicio} - ${t.hora_fin})` });
+      if (!ok) {
+        return res.status(409).json({
+          code: 'TURNO_DESCANSO_MISMO_DIA',
+          message: 'No se puede tener TURNO y DESCANSO el mismo día para el mismo empleado.',
+        });
       }
-    }
 
-    // Cruce con PPY
-    const diasCols = ['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado'];
-    const fechaObj = new Date(data.fecha + 'T00:00:00');
-    const nombreDia = diasCols[fechaObj.getDay()];
+      // ✅ Si lo que estás creando es DESCANSO, no tiene sentido validar cruce por horas
+      if (esDescansoNuevo) {
+        return insertarTurnoExterno(req, res);
+      }
 
-    const sqlPPY = `
-      SELECT p.*, c.sucursal
-      FROM programacion_semanal p
-      JOIN clientes_sucursales c ON p.sucursal_id = c.id
-      WHERE p.empleado_id = ?
-        AND ? BETWEEN p.fecha_inicio_semana AND DATE_ADD(p.fecha_inicio_semana, INTERVAL 6 DAY)
-    `;
+      const inicioNuevo = horaADecimal(data.horaIni);
+      const finNuevo = horaADecimal(data.horaFin);
 
-    db.query(sqlPPY, [data.empleadoId, data.fecha], (err2, turnosPPY) => {
-      if (err2) return res.status(500).json(err2);
+      // Cruce con EXTERNOS
+      const sqlExt = `
+        SELECT t.*, c.empresa
+        FROM turnos_externos t
+        JOIN clientes_sucursales c ON t.sucursal_id = c.id
+        WHERE t.empleado_id = ? AND t.fecha = ?
+      `;
 
-      for (const p of turnosPPY) {
-        const rangoPPY = obtenerRangoHorario(p[nombreDia]);
-        if (rangoPPY && verificarCruce(inicioNuevo, finNuevo, rangoPPY.inicio, rangoPPY.fin)) {
-          return res.status(409).json({
-            code: 'CRUCE_PPY',
-            message: '¡Cruce! Tiene turno en PPY.',
-            detalle: {
-              sucursal: p.sucursal,
-              dia: nombreDia,
-              turnoTexto: p[nombreDia],
-              rango: `${rangoPPY.inicio}:00 - ${rangoPPY.fin}:00`,
-              nuevoTurno: `${data.horaIni} - ${data.horaFin}`,
-              fecha: data.fecha,
-            },
-          });
+      db.query(sqlExt, [data.empleadoId, data.fecha], (err, turnosExistentes) => {
+        if (err) return res.status(500).json(err);
+
+        for (const t of turnosExistentes) {
+          // ✅ ignorar descansos existentes aquí (ya se validaron con exclusividad)
+          const h = typeof t.horas_totales === 'number' ? t.horas_totales : null;
+          const hIni = String(t.hora_inicio ?? '').trim();
+          const hFin = String(t.hora_fin ?? '').trim();
+          const esDescExist =
+            (h !== null && h === 0) ||
+            (hIni.startsWith('00:00') && (!hFin || hFin.startsWith('00:00')));
+          if (esDescExist) continue;
+
+          if (verificarCruce(inicioNuevo, finNuevo, horaADecimal(t.hora_inicio), horaADecimal(t.hora_fin))) {
+            return res.status(409).json({
+              message: `¡Cruce! Ya tiene turno en ${t.empresa} (${t.hora_inicio} - ${t.hora_fin})`,
+            });
+          }
         }
-      }
 
-      return insertarTurnoExterno(req, res);
-    });
-  });
+        // Cruce con PPY
+        const diasCols = ['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado'];
+        const fechaObj = new Date(data.fecha + 'T00:00:00');
+        const nombreDia = diasCols[fechaObj.getDay()];
+
+        const sqlPPY = `
+          SELECT p.*, c.sucursal
+          FROM programacion_semanal p
+          JOIN clientes_sucursales c ON p.sucursal_id = c.id
+          WHERE p.empleado_id = ?
+            AND ? BETWEEN p.fecha_inicio_semana AND DATE_ADD(p.fecha_inicio_semana, INTERVAL 6 DAY)
+        `;
+
+        db.query(sqlPPY, [data.empleadoId, data.fecha], (err2, turnosPPY) => {
+          if (err2) return res.status(500).json(err2);
+
+          for (const p of turnosPPY) {
+            // ✅ si PPY dice DESCANSO, bloquea turno externo
+            const textoPPY = (p[nombreDia] ?? '').toString().trim().toUpperCase();
+            if (textoPPY === 'DESC' || textoPPY === 'DESCANSO' || textoPPY === 'D' || textoPPY === 'OFF') {
+              return res.status(409).json({
+                code: 'TURNO_DESCANSO_MISMO_DIA',
+                message: 'El empleado tiene DESCANSO en PPY ese día. No se puede asignar turno externo.',
+              });
+            }
+
+            const rangoPPY = obtenerRangoHorario(p[nombreDia]);
+            if (rangoPPY && verificarCruce(inicioNuevo, finNuevo, rangoPPY.inicio, rangoPPY.fin)) {
+              return res.status(409).json({
+                code: 'CRUCE_PPY',
+                message: '¡Cruce! Tiene turno en PPY.',
+                detalle: {
+                  sucursal: p.sucursal,
+                  dia: nombreDia,
+                  turnoTexto: p[nombreDia],
+                  rango: `${rangoPPY.inicio}:00 - ${rangoPPY.fin}:00`,
+                  nuevoTurno: `${data.horaIni} - ${data.horaFin}`,
+                  fecha: data.fecha,
+                },
+              });
+            }
+          }
+
+          return insertarTurnoExterno(req, res);
+        });
+      });
+    }
+  );
 });
 
 app.put('/turnos-externos/:id', (req, res) => {
   const { id } = req.params;
   const data = req.body;
 
-  const extras = calcularExtrasFecha(data.fecha);
-  const horasTotales = calcularHorasTotales(data.horaIni, data.horaFin);
+  const fechaISO = String(data.fecha ?? '').split('T')[0];
 
-  const sql = `
-    UPDATE turnos_externos
-    SET empleado_id = ?,
-        sucursal_id = ?,
-        fecha = ?,
-        semana = ?,
-        dia_semana = ?,
-        mes = ?,
-        anio = ?,
-        hora_inicio = ?,
-        hora_fin = ?,
-        horas_totales = ?,
-        id_turno = ?,
-        asignacion = ?,
-        tipo_turno = ?,
-        franja_horaria = ?,
-        estado_turno = ?,
-        estado_ejecucion = ?
-    WHERE id = ?
-  `;
+  // ✅ Vacante: no valida por empleado
+  if (!data.empleadoId) {
+    const extras = calcularExtrasFecha(data.fecha);
+    const horasTotales = calcularHorasTotales(data.horaIni, data.horaFin);
 
-  const valores = [
-    data.empleadoId || null,
-    data.sucursalId,
-    data.fecha,
-    extras?.semana || data.semana || null,
-    extras?.dia_semana || data.dia || null,
-    extras?.mes || data.mes || null,
-    extras?.anio || data.anio || null,
-    data.horaIni || null,
-    data.horaFin || null,
-    data.horasTotales || horasTotales,
-    data.idTurno || 'No Cargar',
-    data.asignacion || data.cargo || null,
-    data.tipoTurno || null,
-    data.franjaHoraria || null,
-    data.estadoTurno || 'OK',
-    data.estadoEjecucion || 'Pendiente',
-    id,
-  ];
+    const sql = `
+      UPDATE turnos_externos
+      SET empleado_id = ?,
+          sucursal_id = ?,
+          fecha = ?,
+          semana = ?,
+          dia_semana = ?,
+          mes = ?,
+          anio = ?,
+          hora_inicio = ?,
+          hora_fin = ?,
+          horas_totales = ?,
+          id_turno = ?,
+          asignacion = ?,
+          tipo_turno = ?,
+          franja_horaria = ?,
+          estado_turno = ?,
+          estado_ejecucion = ?
+      WHERE id = ?
+    `;
 
-  db.query(sql, valores, (err, result) => {
-    if (err) return res.status(500).json(err);
-    if (result.affectedRows === 0) return res.status(404).json({ message: 'No existe el turno' });
-    return res.json({ message: 'Turno actualizado' });
-  });
+    const valores = [
+      data.empleadoId || null,
+      data.sucursalId,
+      data.fecha,
+      extras?.semana || data.semana || null,
+      extras?.dia_semana || data.dia || null,
+      extras?.mes || data.mes || null,
+      extras?.anio || data.anio || null,
+      data.horaIni || null,
+      data.horaFin || null,
+      data.horasTotales || horasTotales,
+      data.idTurno || 'No Cargar',
+      data.asignacion || data.cargo || null,
+      data.tipoTurno || null,
+      data.franjaHoraria || null,
+      data.estadoTurno || 'OK',
+      data.estadoEjecucion || 'Pendiente',
+      id,
+    ];
+
+    return db.query(sql, valores, (err, result) => {
+      if (err) return res.status(500).json(err);
+      if (result.affectedRows === 0) return res.status(404).json({ message: 'No existe el turno' });
+      return res.json({ message: 'Turno actualizado' });
+    });
+  }
+
+  const esDescansoNuevo = esDescansoExternoPayload(data);
+
+  // ✅ 0) Exclusividad TURNO vs DESCANSO el mismo día
+  validarNoTurnoYDescansoMismoDia(
+    { empleadoId: data.empleadoId, fechaISO, esDescansoNuevo, excludeId: Number(id) },
+    (errVal, ok) => {
+      if (errVal) return res.status(500).json(errVal);
+      if (!ok) {
+        return res.status(409).json({
+          code: 'TURNO_DESCANSO_MISMO_DIA',
+          message: 'No se puede tener TURNO y DESCANSO el mismo día para el mismo empleado.',
+        });
+      }
+
+      // ✅ Si es descanso: no validamos cruce por horas, pero sí bloqueamos si PPY tiene turno ese día
+      if (esDescansoNuevo) {
+        const diasCols = ['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado'];
+        const fechaObj = new Date(fechaISO + 'T00:00:00');
+        const nombreDia = diasCols[fechaObj.getDay()];
+
+        const sqlPPY = `
+          SELECT p.*, c.sucursal
+          FROM programacion_semanal p
+          JOIN clientes_sucursales c ON p.sucursal_id = c.id
+          WHERE p.empleado_id = ?
+            AND ? BETWEEN p.fecha_inicio_semana AND DATE_ADD(p.fecha_inicio_semana, INTERVAL 6 DAY)
+        `;
+
+        return db.query(sqlPPY, [data.empleadoId, fechaISO], (err2, turnosPPY) => {
+          if (err2) return res.status(500).json(err2);
+
+          for (const p of turnosPPY) {
+            const texto = (p[nombreDia] ?? '').toString().trim();
+
+            // si hay rango, hay turno
+            const rango = obtenerRangoHorario(texto);
+            if (rango) {
+              return res.status(409).json({
+                code: 'CRUCE_PPY',
+                message: 'No se puede asignar DESCANSO externo porque en PPY hay turno ese día.',
+                detalle: {
+                  sucursal: p.sucursal,
+                  dia: nombreDia,
+                  turnoTexto: texto,
+                  rango: `${rango.inicio}:00 - ${rango.fin}:00`,
+                  fecha: fechaISO,
+                },
+              });
+            }
+          }
+
+          return ejecutarUpdate();
+        });
+      }
+
+      // ✅ TURNO normal: validar cruce con externos + PPY
+      const inicioNuevo = horaADecimal(data.horaIni);
+      const finNuevo = horaADecimal(data.horaFin);
+
+      // 1) Cruce con EXTERNOS (excluye el mismo id)
+      const sqlExt = `
+        SELECT t.*, c.empresa
+        FROM turnos_externos t
+        JOIN clientes_sucursales c ON t.sucursal_id = c.id
+        WHERE t.empleado_id = ? AND t.fecha = ? AND t.id <> ?
+      `;
+
+      db.query(sqlExt, [data.empleadoId, fechaISO, Number(id)], (err3, turnosExistentes) => {
+        if (err3) return res.status(500).json(err3);
+
+        for (const t of turnosExistentes) {
+          // ignorar descansos existentes (ya validado por exclusividad)
+          const h = typeof t.horas_totales === 'number' ? t.horas_totales : null;
+          const hIni = String(t.hora_inicio ?? '').trim();
+          const hFin = String(t.hora_fin ?? '').trim();
+          const esDescExist =
+            (h !== null && h === 0) ||
+            (hIni.startsWith('00:00') && (!hFin || hFin.startsWith('00:00')));
+          if (esDescExist) continue;
+
+          if (verificarCruce(inicioNuevo, finNuevo, horaADecimal(t.hora_inicio), horaADecimal(t.hora_fin))) {
+            return res.status(409).json({
+              message: `¡Cruce! Ya tiene turno en ${t.empresa} (${t.hora_inicio} - ${t.hora_fin})`,
+            });
+          }
+        }
+
+        // 2) Cruce con PPY
+        const diasCols = ['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado'];
+        const fechaObj = new Date(fechaISO + 'T00:00:00');
+        const nombreDia = diasCols[fechaObj.getDay()];
+
+        const sqlPPY = `
+          SELECT p.*, c.sucursal
+          FROM programacion_semanal p
+          JOIN clientes_sucursales c ON p.sucursal_id = c.id
+          WHERE p.empleado_id = ?
+            AND ? BETWEEN p.fecha_inicio_semana AND DATE_ADD(p.fecha_inicio_semana, INTERVAL 6 DAY)
+        `;
+
+        db.query(sqlPPY, [data.empleadoId, fechaISO], (err4, turnosPPY) => {
+          if (err4) return res.status(500).json(err4);
+
+          for (const p of turnosPPY) {
+            const textoPPY = (p[nombreDia] ?? '').toString().trim().toUpperCase();
+
+            // si PPY dice DESCANSO, bloquea turno externo
+            if (textoPPY === 'DESC' || textoPPY === 'DESCANSO' || textoPPY === 'D' || textoPPY === 'OFF') {
+              return res.status(409).json({
+                code: 'TURNO_DESCANSO_MISMO_DIA',
+                message: 'El empleado tiene DESCANSO en PPY ese día. No se puede asignar turno externo.',
+              });
+            }
+
+            const rangoPPY = obtenerRangoHorario(p[nombreDia]);
+            if (rangoPPY && verificarCruce(inicioNuevo, finNuevo, rangoPPY.inicio, rangoPPY.fin)) {
+              return res.status(409).json({
+                code: 'CRUCE_PPY',
+                message: '¡Cruce! Tiene turno en PPY.',
+                detalle: {
+                  sucursal: p.sucursal,
+                  dia: nombreDia,
+                  turnoTexto: p[nombreDia],
+                  rango: `${rangoPPY.inicio}:00 - ${rangoPPY.fin}:00`,
+                  nuevoTurno: `${data.horaIni} - ${data.horaFin}`,
+                  fecha: fechaISO,
+                },
+              });
+            }
+          }
+
+          return ejecutarUpdate();
+        });
+      });
+
+      function ejecutarUpdate() {
+        const extras = calcularExtrasFecha(data.fecha);
+        const horasTotales = calcularHorasTotales(data.horaIni, data.horaFin);
+
+        const sql = `
+          UPDATE turnos_externos
+          SET empleado_id = ?,
+              sucursal_id = ?,
+              fecha = ?,
+              semana = ?,
+              dia_semana = ?,
+              mes = ?,
+              anio = ?,
+              hora_inicio = ?,
+              hora_fin = ?,
+              horas_totales = ?,
+              id_turno = ?,
+              asignacion = ?,
+              tipo_turno = ?,
+              franja_horaria = ?,
+              estado_turno = ?,
+              estado_ejecucion = ?
+          WHERE id = ?
+        `;
+
+        const valores = [
+          data.empleadoId || null,
+          data.sucursalId,
+          data.fecha,
+          extras?.semana || data.semana || null,
+          extras?.dia_semana || data.dia || null,
+          extras?.mes || data.mes || null,
+          extras?.anio || data.anio || null,
+          data.horaIni || null,
+          data.horaFin || null,
+          data.horasTotales || horasTotales,
+          data.idTurno || 'No Cargar',
+          data.asignacion || data.cargo || null,
+          data.tipoTurno || null,
+          data.franjaHoraria || null,
+          data.estadoTurno || 'OK',
+          data.estadoEjecucion || 'Pendiente',
+          id,
+        ];
+
+        db.query(sql, valores, (err, result) => {
+          if (err) return res.status(500).json(err);
+          if (result.affectedRows === 0) return res.status(404).json({ message: 'No existe el turno' });
+          return res.json({ message: 'Turno actualizado' });
+        });
+      }
+    }
+  );
 });
 
+// DELETE (sin cambios)
 app.delete('/turnos-externos/:id', (req, res) => {
   const { id } = req.params;
   db.query('DELETE FROM turnos_externos WHERE id = ?', [id], (err, result) => {
@@ -557,6 +863,23 @@ app.delete('/turnos-externos/:id', (req, res) => {
     return res.json({ message: 'Turno eliminado' });
   });
 });
+
+app.patch('/turnos-externos/:id/liberar', (req, res) => {
+  const { id } = req.params;
+
+  const sql = `
+    UPDATE turnos_externos
+    SET empleado_id = NULL
+    WHERE id = ?
+  `;
+
+  db.query(sql, [id], (err, result) => {
+    if (err) return res.status(500).json(err);
+    if (result.affectedRows === 0) return res.status(404).json({ message: 'No existe el turno' });
+    return res.json({ message: 'Turno liberado (vacante)' });
+  });
+});
+
 
 app.patch('/turnos-externos/:id/liberar', (req, res) => {
   const { id } = req.params;
@@ -624,70 +947,198 @@ app.post('/turnos-externos/importar', (req, res) => {
   resolverEmpleados((err0) => {
     if (err0) return res.status(500).json(err0);
 
-    const filas = normalizados.map((t) => {
+    // --- 1) Construir candidatos con empleadoFinal y determinar si es descanso
+    const candidatos = normalizados.map((t) => {
       const empleadoFinal = t.empleadoId || empleadosPorDoc.get(t.documento) || null;
+      const esDescanso = esDescansoExternoPayload({
+        horaIni: t.horaIni,
+        horaFin: t.horaFin,
+        horasTotales: calcularHorasTotales(t.horaIni, t.horaFin),
+      });
 
-      const extras = calcularExtrasFecha(t.fecha);
-      const horasTotales = calcularHorasTotales(t.horaIni, t.horaFin);
-
-      return [
-        empleadoFinal,
-        t.sucursalId,
-        t.fecha,
-        extras?.semana || null,
-        extras?.dia_semana || null,
-        extras?.mes || null,
-        extras?.anio || null,
-        t.horaIni,
-        t.horaFin,
-        horasTotales,
-        'No Cargar',
-        null,
-        null,
-        null,
-        'OK',
-        'Pendiente',
-      ];
+      return { ...t, empleadoFinal, esDescanso };
     });
 
-    const sqlInsert = `
-      INSERT INTO turnos_externos
-        (empleado_id, sucursal_id, fecha, semana, dia_semana, mes, anio,
-         hora_inicio, hora_fin, horas_totales,
-         id_turno, asignacion, tipo_turno, franja_horaria, estado_turno, estado_ejecucion)
-      VALUES ?
+    // --- 2) Validación interna del batch: no permitir TURNO + DESCANSO mismo empleado+fecha dentro del mismo import
+    const mapaDia = new Map(); // key => { tieneTurno, tieneDescanso }
+    const errores = [];
+
+    for (const c of candidatos) {
+      if (!c.empleadoFinal) continue; // vacantes no validan
+      const key = `${c.empleadoFinal}|${c.fecha}`;
+
+      const cur = mapaDia.get(key) || { tieneTurno: false, tieneDescanso: false };
+      if (c.esDescanso) cur.tieneDescanso = true;
+      else cur.tieneTurno = true;
+
+      mapaDia.set(key, cur);
+
+      if (cur.tieneTurno && cur.tieneDescanso) {
+        errores.push({
+          code: 'TURNO_DESCANSO_MISMO_DIA',
+          empleadoId: c.empleadoFinal,
+          fecha: c.fecha,
+          message: 'En el mismo archivo se está intentando cargar TURNO y DESCANSO el mismo día para el mismo empleado.',
+        });
+      }
+    }
+
+    if (errores.length > 0) {
+      return res.status(409).json({
+        code: 'IMPORT_VALIDATION',
+        message: 'La importación contiene inconsistencias (turno y descanso el mismo día).',
+        errores,
+      });
+    }
+
+    // --- 3) Validación contra DB en bloque (rápida):
+    // buscamos todo lo existente para (empleado_id, fecha) que toque en este import
+    const pares = candidatos
+      .filter((c) => c.empleadoFinal)
+      .map((c) => [c.empleadoFinal, c.fecha]);
+
+    // si no hay pares (solo vacantes), insertamos directo
+    if (pares.length === 0) {
+      return insertarFilas();
+    }
+
+    // eliminar duplicados de pares
+    const paresUniqKey = new Set();
+    const paresUniq = [];
+    for (const [eid, f] of pares) {
+      const k = `${eid}|${f}`;
+      if (paresUniqKey.has(k)) continue;
+      paresUniqKey.add(k);
+      paresUniq.push([eid, f]);
+    }
+
+    // query por IN compuesto usando OR (suficiente para tamaño normal). Si importas miles, lo optimizamos.
+    const where = paresUniq.map(() => '(empleado_id = ? AND fecha = ?)').join(' OR ');
+    const params = paresUniq.flat();
+
+    const sqlExist = `
+      SELECT empleado_id, fecha, hora_inicio, hora_fin, horas_totales
+      FROM turnos_externos
+      WHERE ${where}
     `;
 
-    db.query(sqlInsert, [filas], (err1, result) => {
-      if (err1) return res.status(500).json(err1);
+    db.query(sqlExist, params, (errE, rowsExist) => {
+      if (errE) return res.status(500).json(errE);
 
-      const listaMarcar = filas.map((f) => ({ empleadoId: f[0], fecha: f[2] })).filter((x) => x.empleadoId);
+      const estadoDB = new Map(); // key => { tieneTurno, tieneDescanso }
+      for (const r of rowsExist) {
+        const key = `${r.empleado_id}|${String(r.fecha).split('T')[0]}`;
 
-      let idx = 0;
-      let ppyMarcados = 0;
+        const h = typeof r.horas_totales === 'number' ? r.horas_totales : null;
+        const hIni = String(r.hora_inicio ?? '').trim();
+        const hFin = String(r.hora_fin ?? '').trim();
+        const esDescExist =
+          (h !== null && h === 0) ||
+          (hIni.startsWith('00:00') && (!hFin || hFin.startsWith('00:00')));
 
-      const marcar = () => {
-        if (idx >= listaMarcar.length) {
-          return res.json({
-            message: 'Importación completa',
-            resumen: {
-              recibidos: turnos.length,
-              validos: normalizados.length,
-              insertados: result.affectedRows || 0,
-              ppyMarcados,
-            },
-          });
+        const cur = estadoDB.get(key) || { tieneTurno: false, tieneDescanso: false };
+        if (esDescExist) cur.tieneDescanso = true;
+        else cur.tieneTurno = true;
+        estadoDB.set(key, cur);
+      }
+
+      // validar cada candidato contra lo existente en DB
+      const erroresDB = [];
+      for (const c of candidatos) {
+        if (!c.empleadoFinal) continue;
+        const key = `${c.empleadoFinal}|${c.fecha}`;
+        const cur = estadoDB.get(key);
+        if (!cur) continue;
+
+        // si en DB hay turno y candidato es descanso => conflicto
+        if (c.esDescanso && cur.tieneTurno) {
+          erroresDB.push({ code: 'TURNO_DESCANSO_MISMO_DIA', empleadoId: c.empleadoFinal, fecha: c.fecha });
         }
+        // si en DB hay descanso y candidato es turno => conflicto
+        if (!c.esDescanso && cur.tieneDescanso) {
+          erroresDB.push({ code: 'TURNO_DESCANSO_MISMO_DIA', empleadoId: c.empleadoFinal, fecha: c.fecha });
+        }
+      }
 
-        const it = listaMarcar[idx++];
-        autoMarcarPPYPorExterno({ empleadoId: it.empleadoId, fechaISO: it.fecha, textoPPY: '5PM' }, (e) => {
-          if (!e) ppyMarcados++;
-          marcar();
+      if (erroresDB.length > 0) {
+        return res.status(409).json({
+          code: 'TURNO_DESCANSO_MISMO_DIA',
+          message: 'Hay conflictos con datos existentes (turno y descanso el mismo día).',
+          errores: erroresDB.slice(0, 200),
         });
-      };
+      }
 
-      marcar();
+      return insertarFilas();
     });
+
+    function insertarFilas() {
+      // --- 4) Armar filas y hacer insert masivo
+      const filas = candidatos.map((t) => {
+        const extras = calcularExtrasFecha(t.fecha);
+        const horasTotales = calcularHorasTotales(t.horaIni, t.horaFin);
+
+        return [
+          t.empleadoFinal,
+          t.sucursalId,
+          t.fecha,
+          extras?.semana || null,
+          extras?.dia_semana || null,
+          extras?.mes || null,
+          extras?.anio || null,
+          t.horaIni,
+          t.horaFin,
+          horasTotales,
+          'No Cargar',
+          null,
+          null,
+          null,
+          'OK',
+          'Pendiente',
+        ];
+      });
+
+      const sqlInsert = `
+        INSERT INTO turnos_externos
+          (empleado_id, sucursal_id, fecha, semana, dia_semana, mes, anio,
+           hora_inicio, hora_fin, horas_totales,
+           id_turno, asignacion, tipo_turno, franja_horaria, estado_turno, estado_ejecucion)
+        VALUES ?
+      `;
+
+      db.query(sqlInsert, [filas], (err1, result) => {
+        if (err1) return res.status(500).json(err1);
+
+        // Auto-marca PPY: solo si NO es descanso
+        const listaMarcar = candidatos
+          .filter((c) => c.empleadoFinal && !c.esDescanso)
+          .map((c) => ({ empleadoId: c.empleadoFinal, fecha: c.fecha }));
+
+        let idx = 0;
+        let ppyMarcados = 0;
+
+        const marcar = () => {
+          if (idx >= listaMarcar.length) {
+            return res.json({
+              message: 'Importación completa',
+              resumen: {
+                recibidos: turnos.length,
+                validos: normalizados.length,
+                insertados: result.affectedRows || 0,
+                ppyMarcados,
+              },
+            });
+          }
+
+          const it = listaMarcar[idx++];
+          autoMarcarPPYPorExterno({ empleadoId: it.empleadoId, fechaISO: it.fecha, textoPPY: '5PM' }, (e) => {
+            if (!e) ppyMarcados++;
+            marcar();
+          });
+        };
+
+        marcar();
+      });
+    }
   });
 });
 
@@ -1511,6 +1962,65 @@ app.post('/turnos-externos/clonar', (req, res) => {
     });
   });
 });
+
+function esDescansoExternoDB(row) {
+  const emp = String(row.empresa ?? '').toUpperCase();
+  const suc = String(row.sucursal ?? '').toUpperCase();
+
+  // si ya traes joins de empresa/sucursal úsalo, si no, revisa por horas 0
+  if (emp.includes('DESC') || suc.includes('DESC')) return true;
+
+  const horas = row.horas_totales;
+  if (typeof horas === 'number' && horas === 0) return true;
+
+  const hIni = String(row.hora_inicio ?? '').trim();
+  const hFin = String(row.hora_fin ?? '').trim();
+  if (hIni.startsWith('00:00') && (!hFin || hFin.startsWith('00:00'))) return true;
+
+  return false;
+}
+
+// Valida exclusividad: (turno) XOR (descanso) por empleado+fecha
+function validarNoTurnoYDescansoMismoDia({ empleadoId, fechaISO, excludeId }, cb) {
+  if (!empleadoId || !fechaISO) return cb(null, true);
+
+  // Importante: aquí NO dependemos de empresa/sucursal si no tienes joins.
+  // Tomamos descanso como horas_totales=0 o (00:00:00 & 00:00:00/null)
+  const sql = `
+    SELECT id, hora_inicio, hora_fin, horas_totales
+    FROM turnos_externos
+    WHERE empleado_id = ?
+      AND fecha = ?
+      ${excludeId ? 'AND id <> ?' : ''}
+  `;
+
+  const params = excludeId ? [empleadoId, fechaISO, excludeId] : [empleadoId, fechaISO];
+
+  db.query(sql, params, (err, rows) => {
+    if (err) return cb(err);
+
+    let existeDescanso = false;
+    let existeTurno = false;
+
+    for (const r of rows) {
+      const h = typeof r.horas_totales === 'number' ? r.horas_totales : null;
+
+      const hIni = String(r.hora_inicio ?? '').trim();
+      const hFin = String(r.hora_fin ?? '').trim();
+
+      const esDesc =
+        (h !== null && h === 0) ||
+        (hIni.startsWith('00:00') && (!hFin || hFin.startsWith('00:00')));
+
+      if (esDesc) existeDescanso = true;
+      else existeTurno = true;
+    }
+
+    // ✅ Si hay ambos, no es válido para el nuevo registro (o update)
+    const ok = !(existeDescanso && existeTurno);
+    return cb(null, ok);
+  });
+}
 
 // =========================
 // SERVER
