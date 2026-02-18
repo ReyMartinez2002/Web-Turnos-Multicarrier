@@ -3,15 +3,16 @@ import Sidebar from './components/Sidebar';
 import TablaTurnos from './components/TablaTurnos';
 import ListaEmpleados from './components/ListaEmpleados';
 import ListaClientes from './components/ListaClientes';
-import ProgramacionExternos from './components/ProgramacionExternos'; // <--- Importación Nueva
+import ProgramacionExternos from './components/ProgramacionExternos';
+import DashboardCoberturaTurnos from './components/DashboardCoberturaTurnos'; // ✅ NUEVO
 
 function App() {
-  // Ahora el estado acepta 'externos'
-  const [vistaActual, setVistaActual] = useState('turnos');
+  // ✅ ahora incluye dashboard
+  const [vistaActual, setVistaActual] = useState<'turnos' | 'empleados' | 'clientes' | 'externos' | 'dashboard'>('turnos');
 
   return (
     <div className="flex min-h-screen bg-gray-50">
-      <Sidebar setVista={setVistaActual} vistaActual={vistaActual} />
+      <Sidebar setVista={setVistaActual as (vista: string) => void} vistaActual={vistaActual} />
 
       <main className="ml-64 flex-1 p-8 overflow-auto">
         {vistaActual === 'turnos' && (
@@ -26,9 +27,10 @@ function App() {
 
         {vistaActual === 'empleados' && <ListaEmpleados />}
         {vistaActual === 'clientes' && <ListaClientes />}
-        
-        {/* Nueva Vista */}
-        {vistaActual === 'externos' && <ProgramacionExternos />} 
+        {vistaActual === 'externos' && <ProgramacionExternos />}
+
+        {/* ✅ Nueva Vista */}
+        {vistaActual === 'dashboard' && <DashboardCoberturaTurnos />}
       </main>
     </div>
   );
