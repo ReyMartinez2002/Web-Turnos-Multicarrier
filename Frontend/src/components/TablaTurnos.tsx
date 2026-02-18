@@ -14,7 +14,8 @@ import {
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import * as XLSX from 'xlsx';
+// ⚠️ IMPORTANTE: Usamos xlsx-js-style en lugar de xlsx para poder dar colores y estilos
+import XLSX from 'xlsx-js-style';
 
 interface EmpleadoGrid {
   id_programacion: number;
@@ -40,11 +41,11 @@ type DiaKey = 'sabado' | 'domingo' | 'lunes' | 'martes' | 'miercoles' | 'jueves'
 type ExternoOverlay = {
   id: number;
   empleado_id: number;
-  fecha: string; // ISO o YYYY-MM-DD
-  hora_inicio: string; // "HH:MM" o "HH:MM:SS"
-  hora_fin: string; // "HH:MM" o "HH:MM:SS"
-  empresa: string; // ej: YANUBA
-  sucursal: string; // ej: CENTRO
+  fecha: string;
+  hora_inicio: string;
+  hora_fin: string;
+  empresa: string;
+  sucursal: string;
 };
 
 type OverlayResponse = {
@@ -56,28 +57,126 @@ type OverlayResponse = {
 
 type OverlayTexto = { line1: string; line2: string };
 
+const DIAS: { key: DiaKey; label: string }[] = [
+  { key: 'sabado', label: 'Sábado' },
+  { key: 'domingo', label: 'Domingo' },
+  { key: 'lunes', label: 'Lunes' },
+  { key: 'martes', label: 'Martes' },
+  { key: 'miercoles', label: 'Miércoles' },
+  { key: 'jueves', label: 'Jueves' },
+  { key: 'viernes', label: 'Viernes' },
+];
+
+// --- HELPERS ---
+const normalizarFecha = (f: string) => (f ? f.toString().split('T')[0] : '');
+
+const sumarDias = (fechaInicio: string, dias: number) => {
+  const d = new Date(fechaInicio + 'T00:00:00');
+  d.setDate(d.getDate() + dias);
+  return d.toISOString().split('T')[0];
+};
+
+const keyExterno = (empleadoId: number, fecha: string) => `${empleadoId}-${fecha}`;
+
+const parseHora = (h: string) => {
+  if (!h) return { h24: 0, m: 0 };
+  const [hhStr, mmStr] = h.split(':');
+  const hh = parseInt(hhStr || '0', 10);
+  const mm = parseInt(mmStr || '0', 10);
+  return { h24: Number.isNaN(hh) ? 0 : hh, m: Number.isNaN(mm) ? 0 : mm };
+};
+
+const formatearInicioCorto = (h: string) => {
+  const { h24, m } = parseHora(h);
+  let h12 = h24 % 12;
+  if (h12 === 0) h12 = 12;
+  return m === 0 ? `${h12}` : `${h12}:${m.toString().padStart(2, '0')}`;
+};
+
+const formatearConAMPM = (h: string) => {
+  const { h24, m } = parseHora(h);
+  const suf = h24 >= 12 ? 'PM' : 'AM';
+  let h12 = h24 % 12;
+  if (h12 === 0) h12 = 12;
+  return m === 0 ? `${h12}${suf}` : `${h12}:${m.toString().padStart(2, '0')}${suf}`;
+};
+
+const parseInicioPPYDesdeTexto = (texto: string): string => {
+  const t = (texto || '').toUpperCase().trim();
+  if (!t || t.includes('DESC')) return '';
+
+  const soloHora = t.match(/^(\d{1,2})(?::(\d{2}))?\s*(AM|PM)$/i);
+  if (soloHora) {
+    const h = soloHora[1];
+    const m = soloHora[2];
+    const ap = soloHora[3].toUpperCase();
+    return `${h}${m ? `:${m}` : ''}${ap}`;
+  }
+
+  const rango12 = t.match(/(\d{1,2})(?::(\d{2}))?\s*(AM|PM)\s*(?:A|-|HASTA)\s*(\d{1,2})(?::(\d{2}))?\s*(AM|PM)/i);
+  if (rango12) {
+    const h1 = rango12[1];
+    const m1 = rango12[2];
+    const ap1 = rango12[3].toUpperCase();
+    return `${h1}${m1 ? `:${m1}` : ''}${ap1}`;
+  }
+
+  const rango24 = t.match(/(\d{1,2})(?::(\d{2}))?\s*(?:A|-|HASTA)\s*(\d{1,2})(?::(\d{2}))?/i);
+  if (rango24) {
+    const h1 = parseInt(rango24[1], 10);
+    const m1 = parseInt(rango24[2] || '0', 10);
+
+    if (!Number.isNaN(h1)) {
+      const suf = h1 >= 12 ? 'PM' : 'AM';
+      let h12 = h1 % 12;
+      if (h12 === 0) h12 = 12;
+      return Number.isNaN(m1) || m1 === 0 ? `${h12}${suf}` : `${h12}:${m1.toString().padStart(2, '0')}${suf}`;
+    }
+  }
+
+  return '';
+};
+
+const construirTextoOverlay = (t: ExternoOverlay): OverlayTexto => {
+  const ini = formatearInicioCorto(t.hora_inicio);
+  const fin = formatearConAMPM(t.hora_fin);
+  const empresa = (t.empresa || '').toString().trim().toUpperCase();
+  const sucursal = (t.sucursal || '').toString().trim().toUpperCase();
+
+  return {
+    line1: `${ini} A ${fin} ${empresa}`.trim(),
+    line2: `${sucursal}`.trim(),
+  };
+};
+
+const construirMapaExternos = (externos: ExternoOverlay[]) => {
+  const map = new Map<string, OverlayTexto[]>();
+  externos.forEach((t) => {
+    const fecha = normalizarFecha(t.fecha);
+    const k = keyExterno(t.empleado_id, fecha);
+    const texto = construirTextoOverlay(t);
+    if (!map.has(k)) map.set(k, []);
+    map.get(k)!.push(texto);
+  });
+  return map;
+};
+
+// --- COMPONENTE PRINCIPAL ---
 const TablaTurnos = () => {
   const [fechaInicioSemana, setFechaInicioSemana] = useState('2026-02-14');
 
   const diasSemana = useMemo(() => {
     const base = new Date(fechaInicioSemana + 'T00:00:00');
-    const dias: { key: DiaKey; label: string }[] = [
-      { key: 'sabado', label: 'Sábado' },
-      { key: 'domingo', label: 'Domingo' },
-      { key: 'lunes', label: 'Lunes' },
-      { key: 'martes', label: 'Martes' },
-      { key: 'miercoles', label: 'Miércoles' },
-      { key: 'jueves', label: 'Jueves' },
-      { key: 'viernes', label: 'Viernes' },
-    ];
-
-    return dias.map((d, index) => {
+    return DIAS.map((d, index) => {
       const fechaDia = new Date(base);
       fechaDia.setDate(base.getDate() + index);
       const dia = fechaDia.getDate();
-      const mes = fechaDia.toLocaleDateString('es-CO', { month: 'short' });
+      const mes = fechaDia.toLocaleDateString('es-CO', { month: 'short' }).toUpperCase().replace('.', '');
+      const anio = fechaDia.getFullYear();
+      
       return {
-        fecha: `${dia} ${mes}`,
+        fechaCorta: `${dia} ${mes}`,
+        fechaCompleta: `${d.label.toUpperCase()} ${dia} ${mes} ${anio}`,
         dia: d.label,
         key: d.key,
       };
@@ -86,145 +185,29 @@ const TablaTurnos = () => {
 
   const [sucursales, setSucursales] = useState<SucursalGrid[]>([]);
   const [listaEmpleadosBD, setListaEmpleadosBD] = useState<EmpleadoBD[]>([]);
-
-  // Overlay externos
   const [overlayExternosMap, setOverlayExternosMap] = useState<Map<string, OverlayTexto[]>>(new Map());
 
-  // Modales
+  // Modales y estados
   const [modalSucursalAbierto, setModalSucursalAbierto] = useState(false);
   const [modalEmpleadoAbierto, setModalEmpleadoAbierto] = useState(false);
   const [nuevaSucursalNombre, setNuevaSucursalNombre] = useState('');
-
-  // Edición
   const [modoEdicion, setModoEdicion] = useState(false);
   const [idProgramacionAEditar, setIdProgramacionAEditar] = useState<number | null>(null);
   const [sucursalSeleccionadaId, setSucursalSeleccionadaId] = useState<number | null>(null);
   const [tipoSeleccionado, setTipoSeleccionado] = useState<'Fijo' | 'Apoyo'>('Fijo');
   const [empleadoSeleccionadoId, setEmpleadoSeleccionadoId] = useState<string>('');
-
   const [rotando, setRotando] = useState(false);
-
-  // ---------- HELPERS ----------
-  const normalizarFecha = (f: string) => (f ? f.toString().split('T')[0] : '');
-
-  const sumarDias = (fechaInicio: string, dias: number) => {
-    const d = new Date(fechaInicio + 'T00:00:00');
-    d.setDate(d.getDate() + dias);
-    return d.toISOString().split('T')[0];
-  };
-
-  const keyExterno = (empleadoId: number, fecha: string) => `${empleadoId}-${fecha}`;
-
-  const parseHora = (h: string) => {
-    if (!h) return { h24: 0, m: 0 };
-    const [hhStr, mmStr] = h.split(':');
-    const hh = parseInt(hhStr || '0', 10);
-    const mm = parseInt(mmStr || '0', 10);
-    return { h24: Number.isNaN(hh) ? 0 : hh, m: Number.isNaN(mm) ? 0 : mm };
-  };
-
-  // 11:00 -> "11", 11:30 -> "11:30", 14:00 -> "2"
-  const formatearInicioCorto = (h: string) => {
-    const { h24, m } = parseHora(h);
-    let h12 = h24 % 12;
-    if (h12 === 0) h12 = 12;
-    return m === 0 ? `${h12}` : `${h12}:${m.toString().padStart(2, '0')}`;
-  };
-
-  // 15:00 -> "3PM", 05:00 -> "5AM", 17:30 -> "5:30PM"
-  const formatearConAMPM = (h: string) => {
-    const { h24, m } = parseHora(h);
-    const suf = h24 >= 12 ? 'PM' : 'AM';
-    let h12 = h24 % 12;
-    if (h12 === 0) h12 = 12;
-    return m === 0 ? `${h12}${suf}` : `${h12}:${m.toString().padStart(2, '0')}${suf}`;
-  };
-
-  // Lee hora inicio PPY del texto escrito en la celda PPY.
-  // Necesitas escribir el PPY como: "5PM" o "5PM A 9PM" (recomendado), o "17 A 21".
-  // Si solo dice "PM", NO se puede deducir 5PM y retornará "".
-  const parseInicioPPYDesdeTexto = (texto: string): string => {
-    const t = (texto || '').toUpperCase().trim();
-    if (!t || t.includes('DESC')) return '';
-
-    // 1) si el usuario escribió solo "5PM" / "5 PM"
-    const soloHora = t.match(/^(\d{1,2})(?::(\d{2}))?\s*(AM|PM)$/i);
-    if (soloHora) {
-      const h = soloHora[1];
-      const m = soloHora[2];
-      const ap = soloHora[3].toUpperCase();
-      return `${h}${m ? `:${m}` : ''}${ap}`;
-    }
-
-    // 2) "5PM A 9PM" / "5PM-9PM"
-    const rango12 = t.match(/(\d{1,2})(?::(\d{2}))?\s*(AM|PM)\s*(?:A|-|HASTA)\s*(\d{1,2})(?::(\d{2}))?\s*(AM|PM)/i);
-    if (rango12) {
-      const h1 = rango12[1];
-      const m1 = rango12[2];
-      const ap1 = rango12[3].toUpperCase();
-      return `${h1}${m1 ? `:${m1}` : ''}${ap1}`;
-    }
-
-    // 3) "17 A 21" / "17:00 A 21:00"
-    const rango24 = t.match(/(\d{1,2})(?::(\d{2}))?\s*(?:A|-|HASTA)\s*(\d{1,2})(?::(\d{2}))?/i);
-    if (rango24) {
-      const h1 = parseInt(rango24[1], 10);
-      const m1 = parseInt(rango24[2] || '0', 10);
-
-      if (!Number.isNaN(h1)) {
-        const suf = h1 >= 12 ? 'PM' : 'AM';
-        let h12 = h1 % 12;
-        if (h12 === 0) h12 = 12;
-        return Number.isNaN(m1) || m1 === 0 ? `${h12}${suf}` : `${h12}:${m1.toString().padStart(2, '0')}${suf}`;
-      }
-    }
-
-    return '';
-  };
-
-  // Texto overlay EXACTO:
-  // Line1: "11 A 3PM YANUBA"
-  // Line2: "CENTRO - 5PM"   <-- 5PM sale de la celda PPY (texto del textarea)
-  const construirTextoOverlay = (t: ExternoOverlay): OverlayTexto => {
-    const ini = formatearInicioCorto(t.hora_inicio);
-    const fin = formatearConAMPM(t.hora_fin);
-
-    const empresa = (t.empresa || '').toString().trim().toUpperCase();
-    const sucursal = (t.sucursal || '').toString().trim().toUpperCase();
-
-    return {
-      line1: `${ini} A ${fin} ${empresa}`.trim(),
-      line2: `${sucursal}`.trim(), // SOLO SUCURSAL (la hora PPY se agrega al render)
-    };
-  };
-
-  const construirMapaExternos = (externos: ExternoOverlay[]) => {
-    const map = new Map<string, OverlayTexto[]>();
-
-    externos.forEach((t) => {
-      const fecha = normalizarFecha(t.fecha);
-      const k = keyExterno(t.empleado_id, fecha);
-      const texto = construirTextoOverlay(t);
-
-      if (!map.has(k)) map.set(k, []);
-      map.get(k)!.push(texto);
-    });
-
-    return map;
-  };
 
   const obtenerExternosParaCelda = (empleadoId: number, indexTurno: number) => {
     const fechaCelda = sumarDias(fechaInicioSemana, indexTurno);
     return overlayExternosMap.get(keyExterno(empleadoId, fechaCelda)) || [];
   };
 
-  // --- CARGAR DATOS ---
   useEffect(() => {
     const cargarDatos = async () => {
       try {
         const resSuc = await fetch('http://localhost:3001/clientes');
         const dataSuc = await resSuc.json();
-
         const resProg = await fetch(`http://localhost:3001/programacion-semanal-con-externos?fecha=${fechaInicioSemana}`);
         const dataProgOverlay = (await resProg.json()) as OverlayResponse;
 
@@ -239,7 +222,6 @@ const TablaTurnos = () => {
         const estructura: SucursalGrid[] = soloPanPaYa.map((s: any) => {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const empleadosDeSucursal = dataProg.filter((p: any) => p.sucursal_id === s.id);
-
           return {
             id: s.id,
             nombre: s.sucursal,
@@ -253,7 +235,6 @@ const TablaTurnos = () => {
             })),
           };
         });
-
         setSucursales(estructura);
 
         const resEmp = await fetch('http://localhost:3001/empleados');
@@ -262,26 +243,21 @@ const TablaTurnos = () => {
         console.error('Error cargando datos', error);
       }
     };
-
     cargarDatos();
   }, [fechaInicioSemana]);
 
-  // --- RECARGA MANUAL ---
   const recargarDatosManual = async () => {
     try {
       const resSuc = await fetch('http://localhost:3001/clientes');
       const dataSuc = await resSuc.json();
-
       const resProg = await fetch(`http://localhost:3001/programacion-semanal-con-externos?fecha=${fechaInicioSemana}`);
       const dataProgOverlay = (await resProg.json()) as OverlayResponse;
-
       const dataProg = dataProgOverlay.programacion || [];
       const externos = dataProgOverlay.externos || [];
       setOverlayExternosMap(construirMapaExternos(externos));
-
+      
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const soloPanPaYa = dataSuc.filter((s: any) => s.empresa === 'PAN PA YA');
-
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const estructura = soloPanPaYa.map((s: any) => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -299,14 +275,12 @@ const TablaTurnos = () => {
           })),
         };
       });
-
       setSucursales(estructura);
-    } catch (error) {
-      console.error(error);
+    } catch (e) {
+      console.error(e);
     }
   };
 
-  // --- CAMBIAR SEMANA ---
   const cambiarSemana = async (dias: number) => {
     const fechaBase = new Date(fechaInicioSemana + 'T00:00:00');
     const nuevaFechaObj = new Date(fechaBase);
@@ -321,27 +295,31 @@ const TablaTurnos = () => {
           body: JSON.stringify({ fechaAnterior: fechaInicioSemana, fechaNueva: nuevaFechaStr }),
         });
       } catch (error) {
-        console.error('Error intentando replicar:', error);
+        console.error(error);
       }
     }
     setFechaInicioSemana(nuevaFechaStr);
   };
 
-  // --- EXPORTAR PDF ---
   const exportarPDF = () => {
     const doc = new jsPDF('l', 'mm', 'a4');
     doc.text(`Programación Pan Pa Ya - Semana del ${fechaInicioSemana}`, 14, 15);
-
     const bodyData: string[][] = [];
     sucursales.forEach((suc) => {
       bodyData.push([suc.nombre, '', '', '', '', '', '', '']);
       suc.empleados.forEach((emp) => {
-        bodyData.push([emp.nombre + ` (${emp.tipo})`, ...emp.turnos]);
+        const filaTurnos = emp.turnos.map((t, i) => {
+          const externos = obtenerExternosParaCelda(emp.empleado_id, i);
+          const ext = externos[0];
+          const inicioPPY = parseInicioPPYDesdeTexto(t);
+          if (ext) return `${ext.line1}\n${ext.line2}${inicioPPY ? ' - ' + inicioPPY : ''}`;
+          return t;
+        });
+        bodyData.push([emp.nombre + ` (${emp.tipo})`, ...filaTurnos]);
       });
     });
-
     autoTable(doc, {
-      head: [['SUCURSAL / EMPLEADO', ...diasSemana.map((d) => `${d.dia} ${d.fecha}`)]],
+      head: [['SUCURSAL / EMPLEADO', ...diasSemana.map((d) => d.fechaCompleta)]],
       body: bodyData,
       startY: 20,
       theme: 'grid',
@@ -357,27 +335,187 @@ const TablaTurnos = () => {
     doc.save(`programacion_${fechaInicioSemana}.pdf`);
   };
 
-  // --- EXPORTAR EXCEL ---
+  // -------------------------------------------------------------
+  // ✅ EXPORTAR EXCEL CON ESTILOS IDÉNTICOS A LA IMAGEN (Colores y Bordes)
+  // -------------------------------------------------------------
+    // -------------------------------------------------------------
+  // ✅ EXPORTAR EXCEL: BLOQUES SEPARADOS CON BORDES GRUESOS
+  // -------------------------------------------------------------
   const exportarExcel = () => {
-    const datosExcel: Record<string, string>[] = [];
+    // 1. Estilos Base
+    const borderThin = { style: 'thin', color: { rgb: '000000' } };
+    const borderMedium = { style: 'medium', color: { rgb: '000000' } }; // Borde grueso
+
+    // Fuente genérica
+    const fontBase = { name: 'Arial Narrow', sz: 11, bold: true };
+    const fontNormal = { name: 'Arial Narrow', sz: 11, bold: false };
+
+    // Estilo para el ENCABEZADO (Borde grueso alrededor)
+    const styleHeader = {
+      font: fontBase,
+      alignment: { vertical: 'center', horizontal: 'center', wrapText: true },
+      border: { top: borderMedium, bottom: borderMedium, left: borderMedium, right: borderMedium },
+      fill: { fgColor: { rgb: 'FFFFFF' } }
+    };
+
+    // Estilo para SUCURSAL (Columna A - Merged)
+    const styleSucursal = {
+      font: { ...fontBase, sz: 12 },
+      alignment: { vertical: 'center', horizontal: 'center', wrapText: true },
+      border: { top: borderMedium, bottom: borderMedium, left: borderMedium, right: borderMedium },
+      fill: { fgColor: { rgb: 'FFFFFF' } }
+    };
+
+    // Estilos de Celdas de Datos (Borde fino interno, pero manejaremos el grueso externo manualmente)
+    const styleCellBase = {
+      font: fontNormal,
+      alignment: { vertical: 'center', horizontal: 'center', wrapText: true },
+      border: { top: borderThin, bottom: borderThin, left: borderThin, right: borderThin }
+    };
+
+    // Colores de fondo
+    const bgGreen = { fgColor: { rgb: '92D050' } }; // Verde claro
+    const bgYellow = { fgColor: { rgb: 'FFFF00' } }; // Amarillo
+    const bgWhite = { fgColor: { rgb: 'FFFFFF' } };
+
+    // Texto del encabezado (se repite en cada bloque)
+    const headerTexts = [
+      'SUCURSAL', 
+      'DOMICILIARIO', 
+      ...diasSemana.map(d => d.fechaCompleta) // "SABADO 14 FEB 2026"
+    ];
+
+    // Matriz de datos y merges
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rows: any[][] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const merges: any[] = [];
+
+    let rowIndex = 0; // Rastreador de la fila actual
+
+    // 2. Construir Bloques por Sucursal
     sucursales.forEach((suc) => {
-      datosExcel.push({ EMPLEADO: `--- ${suc.nombre} ---` });
-      suc.empleados.forEach((emp) => {
-        const fila: Record<string, string> = { EMPLEADO: emp.nombre, TIPO: emp.tipo };
-        diasSemana.forEach((d, i) => {
-          fila[`${d.dia} ${d.fecha}`] = emp.turnos[i];
+      // --- A) Fila de Encabezado ---
+      const headerRow = headerTexts.map(text => ({
+        v: text,
+        s: styleHeader
+      }));
+      rows.push(headerRow);
+      rowIndex++; // Avanzamos 1 fila
+
+      // --- B) Filas de Empleados ---
+      const startRowData = rowIndex; // Donde empiezan los datos de esta sucursal
+
+      suc.empleados.forEach((emp, empIndex) => {
+        const rowCells = [];
+        const isLastRow = empIndex === suc.empleados.length - 1;
+
+        // 1. Celda SUCURSAL (Solo la creamos, el merge visual hará el resto)
+        // Aplicamos borde grueso siempre a la izquierda
+        rowCells.push({ v: suc.nombre, s: styleSucursal });
+
+        // 2. Celda NOMBRE (Verde si es Fijo, Blanco si no)
+        // En tu imagen, los AM/PM suelen ser verdes. Asumimos Fijo = Verde.
+        const colorNombre = emp.tipo === 'Fijo' ? bgGreen : bgWhite;
+        
+        // Bordes del nombre: Izquierda/Derecha finos, Arriba/Abajo finos (salvo extremos del bloque)
+        const borderNombre = { 
+          left: borderMedium, // Borde grueso separando Sucursal de Nombre
+          right: borderMedium, 
+          top: borderThin, 
+          bottom: borderThin 
+        };
+        if (empIndex === 0) borderNombre.top = borderMedium; // Borde grueso arriba (bajo el header)
+        if (isLastRow) borderNombre.bottom = borderMedium;   // Borde grueso abajo (fin del bloque)
+
+        rowCells.push({
+          v: emp.nombre,
+          s: { ...styleCellBase, fill: colorNombre, border: borderNombre, font: fontBase }
         });
-        datosExcel.push(fila);
+
+        // 3. Celdas TURNOS
+        emp.turnos.forEach((turnoBase, tIndex) => {
+          const externos = obtenerExternosParaCelda(emp.empleado_id, tIndex);
+          const ext = externos[0];
+          
+          let cellVal = turnoBase || '';
+          let cellFill = bgWhite;
+
+          // Lógica de colores (Amarillo para especiales/externos, blanco normal)
+          const tUpper = (turnoBase || '').toUpperCase();
+          if (ext) {
+            const inicioPPY = parseInicioPPYDesdeTexto(turnoBase);
+            cellVal = `${ext.line1}\n${ext.line2}${inicioPPY ? ' - ' + inicioPPY : ''}`;
+            cellFill = bgYellow;
+          } else if (tUpper.includes('YANUBA') || tUpper.includes('CBC') || tUpper.includes('KKRK') || tUpper === '5PM') {
+            cellFill = bgYellow;
+          } else if (tUpper === 'DESCANSO') {
+            cellFill = bgWhite;
+          } else {
+            // Si el nombre es verde (fijo) y es turno normal, a veces en la imagen se ve verde tenue o blanco.
+            // Lo dejaremos blanco o verde según prefieras. En la imagen parece blanco o verde suave.
+            // Usaremos la lógica del usuario: Turno normal = Fondo blanco (o hereda verde si prefieres).
+            // Viendo la imagen, las celdas AM/PM de los verdes tienen fondo blanco (ej: SALITRE).
+            cellFill = bgWhite; 
+          }
+
+          // Bordes de la celda de turno
+          const borderCell = { top: borderThin, bottom: borderThin, left: borderThin, right: borderThin };
+          
+          if (empIndex === 0) borderCell.top = borderMedium; // Techo del bloque grueso
+          if (isLastRow) borderCell.bottom = borderMedium;   // Piso del bloque grueso
+          if (tIndex === emp.turnos.length - 1) borderCell.right = borderMedium; // Borde derecho final grueso
+
+          rowCells.push({
+            v: cellVal,
+            s: { ...styleCellBase, fill: cellFill, border: borderCell }
+          });
+        });
+
+        rows.push(rowCells);
+        rowIndex++;
       });
+
+      // --- C) Merge de la columna SUCURSAL ---
+      // Unimos desde la fila startRowData hasta la actual (rowIndex - 1)
+      if (suc.empleados.length > 0) {
+        merges.push({
+          s: { r: startRowData, c: 0 },
+          e: { r: rowIndex - 1, c: 0 }
+        });
+      }
+
+      // --- D) Fila Vacía (Espaciador) ---
+      rows.push([]); 
+      rowIndex++;
     });
 
-    const worksheet = XLSX.utils.json_to_sheet(datosExcel);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Programación');
-    XLSX.writeFile(workbook, `programacion_${fechaInicioSemana}.xlsx`);
+    // 3. Generar Excel
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet([]); 
+
+    // Insertar datos
+    XLSX.utils.sheet_add_aoa(ws, rows, { origin: 'A1' });
+
+    // Anchos de columna
+    ws['!cols'] = [
+      { wch: 15 }, // Sucursal
+      { wch: 40 }, // Domiciliario
+      { wch: 22 }, // Sab
+      { wch: 22 }, // Dom
+      { wch: 22 }, // Lun
+      { wch: 22 }, // Mar
+      { wch: 22 }, // Mie
+      { wch: 22 }, // Jue
+      { wch: 22 }, // Vie
+    ];
+
+    ws['!merges'] = merges;
+
+    XLSX.utils.book_append_sheet(wb, ws, 'Programación');
+    XLSX.writeFile(wb, `Programacion_PPY_${fechaInicioSemana}.xlsx`);
   };
 
-  // --- FUNCIONES CRUD ---
   const abrirModalAgregar = (sucursalId: number, tipo: 'Fijo' | 'Apoyo') => {
     setModoEdicion(false);
     setSucursalSeleccionadaId(sucursalId);
@@ -405,27 +543,21 @@ const TablaTurnos = () => {
       };
 
       if (modoEdicion && idProgramacionAEditar) {
-        const response = await fetch('http://localhost:3001/programacion-semanal/editar-empleado', {
+        await fetch('http://localhost:3001/programacion-semanal/editar-empleado', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ idProgramacion: idProgramacionAEditar, nuevoEmpleadoId: parseInt(empleadoSeleccionadoId) }),
         });
-        if (response.ok) {
-          setModalEmpleadoAbierto(false);
-          recargarDatosManual();
-        }
       } else {
         if (!sucursalSeleccionadaId) return;
-        const response = await fetch('http://localhost:3001/programacion-semanal/agregar', {
+        await fetch('http://localhost:3001/programacion-semanal/agregar', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(bodyBase),
         });
-        if (response.ok) {
-          setModalEmpleadoAbierto(false);
-          recargarDatosManual();
-        }
       }
+      setModalEmpleadoAbierto(false);
+      recargarDatosManual();
     } catch (error) {
       console.error(error);
     }
@@ -467,9 +599,8 @@ const TablaTurnos = () => {
         body: JSON.stringify({ sucursalId, empleadoId, tipo, dia: diaColumna, valor, fechaSemana: fechaInicioSemana }),
       });
 
-      const data = await response.json();
-
       if (!response.ok) {
+        const data = await response.json();
         alert(`⚠️ ${data.error}: ${data.mensaje}`);
         actualizarEstado(valorAnterior);
       }
@@ -533,6 +664,7 @@ const TablaTurnos = () => {
 
   return (
     <div className="space-y-6">
+      {/* HEADER */}
       <div className="flex flex-col xl:flex-row justify-between items-center bg-white p-4 rounded-lg shadow-sm border border-gray-100 gap-4">
         <div>
           <h2 className="text-xl font-bold text-gray-800 tracking-tight">Planificación Semanal</h2>
@@ -586,6 +718,7 @@ const TablaTurnos = () => {
         </div>
       </div>
 
+      {/* TABLA WEB */}
       <div className="overflow-x-auto bg-white rounded-xl shadow-lg border border-gray-200">
         <table className="w-full text-sm text-left border-collapse">
           <thead className="bg-slate-900 text-white">
@@ -594,7 +727,7 @@ const TablaTurnos = () => {
               {diasSemana.map((dia, index) => (
                 <th key={index} className="p-3 border-r border-slate-700 text-center min-w-[120px]">
                   <div className="text-xs opacity-75 uppercase tracking-wider">{dia.dia}</div>
-                  <div className="font-bold text-lg">{dia.fecha}</div>
+                  <div className="font-bold text-lg">{dia.fechaCorta}</div>
                 </th>
               ))}
               <th className="p-2 w-10 text-center bg-slate-900"></th>
@@ -663,64 +796,57 @@ const TablaTurnos = () => {
                     </td>
 
                     {empleado.turnos.map((turno, tIndex) => {
-  const externosTxt = obtenerExternosParaCelda(empleado.empleado_id, tIndex);
+                      const externosTxt = obtenerExternosParaCelda(empleado.empleado_id, tIndex);
+                      const externoPrincipal = externosTxt[0];
+                      const inicioPPY = parseInicioPPYDesdeTexto(turno);
+                      const ocultarTextoPPY = Boolean(externoPrincipal);
 
-  // SOLO 1 overlay (evita duplicados si llegan 2 externos el mismo día)
-  const externoPrincipal = externosTxt[0];
+                      const colorBase =
+                        turno === 'DESCANSO' || turno === 'DESC'
+                          ? 'text-red-500 bg-red-50/50'
+                          : turno.includes('AM')
+                            ? 'text-blue-600'
+                            : turno.includes('PM')
+                              ? 'text-purple-600'
+                              : 'text-gray-700';
 
-  // Hora inicio PPY (ej: 5PM) tomada del texto del textarea (si escribes "5PM" o "5PM A 9PM")
-  const inicioPPY = parseInicioPPYDesdeTexto(turno);
+                      return (
+                        <td key={tIndex} className="p-0 border-r border-gray-100 h-16 relative">
+                          <div className="h-16 w-full relative">
+                            <textarea
+                              value={turno}
+                              onChange={(e) =>
+                                handleChange(
+                                  sucursal.id,
+                                  empleado.id_programacion,
+                                  empleado.empleado_id,
+                                  empleado.tipo,
+                                  e.target.value,
+                                  tIndex
+                                )
+                              }
+                              className={`w-full h-full text-center text-xs font-semibold focus:outline-none focus:bg-indigo-50 transition-colors resize-none p-2 flex items-center justify-center ${colorBase} ${
+                                ocultarTextoPPY ? 'text-transparent caret-indigo-600' : ''
+                              }`}
+                            />
 
-  const colorBase =
-    turno === 'DESCANSO' || turno === 'DESC'
-      ? 'text-red-500 bg-red-50/50'
-      : turno.includes('AM')
-        ? 'text-blue-600'
-        : turno.includes('PM')
-          ? 'text-purple-600'
-          : 'text-gray-700';
-
-  // Si hay overlay, ocultamos el texto del textarea para que no se vea duplicado (ej: "5PM")
-  const ocultarTextoPPY = Boolean(externoPrincipal);
-
-  return (
-    <td key={tIndex} className="p-0 border-r border-gray-100 h-16 relative">
-      <div className="h-16 w-full relative">
-        <textarea
-          value={turno}
-          onChange={(e) =>
-            handleChange(
-              sucursal.id,
-              empleado.id_programacion,
-              empleado.empleado_id,
-              empleado.tipo,
-              e.target.value,
-              tIndex
-            )
-          }
-          className={`w-full h-full text-center text-xs font-semibold focus:outline-none focus:bg-indigo-50 transition-colors resize-none p-2 flex items-center justify-center ${colorBase} ${
-            ocultarTextoPPY ? 'text-transparent caret-indigo-600' : ''
-          }`}
-        />
-
-        {/* OVERLAY limpio (sin repetirse) */}
-        {externoPrincipal && (
-          <div className="absolute inset-0 pointer-events-none flex items-center justify-center px-1">
-            <div className="text-center leading-tight">
-              <div className="text-[11px] font-bold text-purple-700">
-                <div>{externoPrincipal.line1}</div>
-                <div>
-                  {externoPrincipal.line2}
-                  {inicioPPY ? ` - ${inicioPPY}` : ''}
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-    </td>
-  );
-})}
+                            {externoPrincipal && (
+                              <div className="absolute inset-0 pointer-events-none flex items-center justify-center px-1">
+                                <div className="text-center leading-tight">
+                                  <div className="text-[11px] font-bold text-purple-700">
+                                    <div>{externoPrincipal.line1}</div>
+                                    <div>
+                                      {externoPrincipal.line2}
+                                      {inicioPPY ? ` - ${inicioPPY}` : ''}
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        </td>
+                      );
+                    })}
 
                     <td className="p-0 text-center">
                       <button
